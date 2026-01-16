@@ -4,6 +4,8 @@
 // @version      1.17
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
+// @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
+// @downloadURL  https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
 // @match        https://www.amazon.com/vine/*
 // @match        https://www.amazon.com/*/vine/*
 // @match        https://vine.amazon.com/*
