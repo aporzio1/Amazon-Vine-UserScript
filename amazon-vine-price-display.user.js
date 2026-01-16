@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.14
+// @version      1.15
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @match        https://www.amazon.com/vine/*
@@ -23,6 +23,7 @@
     CACHE_KEY: 'vine_price_cache',
     THRESHOLDS_KEY: 'vine_price_thresholds',
     HIDE_CACHED_KEY: 'vine_hide_cached',
+    SAVED_SEARCHES_KEY: 'vine_saved_searches',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 1000,
     MAX_RETRIES: 3,
@@ -534,7 +535,7 @@
       settingsLink.href = 'javascript:void(0)';
       settingsLink.role = 'button';
       settingsLink.className = 'a-popover-trigger a-declarative';
-      settingsLink.textContent = 'Price Settings';
+      settingsLink.textContent = 'Vine Tools';
       settingsLink.style.cursor = 'pointer';
 
       settingsLink.addEventListener('click', (e) => {
