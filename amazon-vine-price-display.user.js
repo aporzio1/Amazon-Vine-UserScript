@@ -609,7 +609,7 @@
         <h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1f2937;">Vine Tools</h2>
         
         <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb;">
-          <button id="tab-price" class="vine-tab active" style="
+          <button id="tab-searches" class="vine-tab active" style="
             flex: 1;
             padding: 12px;
             background: none;
@@ -619,8 +619,8 @@
             font-weight: 600;
             color: #667eea;
             cursor: pointer;
-          ">Price Settings</button>
-          <button id="tab-searches" class="vine-tab" style="
+          ">Saved Searches</button>
+          <button id="tab-price" class="vine-tab" style="
             flex: 1;
             padding: 12px;
             background: none;
@@ -630,10 +630,10 @@
             font-weight: 600;
             color: #6b7280;
             cursor: pointer;
-          ">Saved Searches</button>
+          ">Price Settings</button>
         </div>
 
-        <div id="content-price" class="vine-tab-content">
+        <div id="content-price" class="vine-tab-content" style="display: none;">
           <div style="margin-bottom: 24px;">
           <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Price Ranges</label>
           <div style="margin-bottom: 12px;">
@@ -700,7 +700,7 @@
         </div>
         </div>
 
-        <div id="content-searches" class="vine-tab-content" style="display: none;">
+        <div id="content-searches" class="vine-tab-content">
           <div style="margin-bottom: 20px;">
             <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Add New Search</label>
             <div style="display: flex; gap: 8px; margin-bottom: 8px;">
