@@ -603,11 +603,38 @@
       if (!thresholds.RED_MAX) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
 
       const hideCached = getStorage(CONFIG.HIDE_CACHED_KEY, false);
+      const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
 
       dialog.innerHTML = `
-        <h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1f2937;">Price Display Settings</h2>
+        <h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1f2937;">Vine Tools</h2>
         
-        <div style="margin-bottom: 24px;">
+        <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb;">
+          <button id="tab-price" class="vine-tab active" style="
+            flex: 1;
+            padding: 12px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid #667eea;
+            font-size: 14px;
+            font-weight: 600;
+            color: #667eea;
+            cursor: pointer;
+          ">Price Settings</button>
+          <button id="tab-searches" class="vine-tab" style="
+            flex: 1;
+            padding: 12px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: #6b7280;
+            cursor: pointer;
+          ">Saved Searches</button>
+        </div>
+
+        <div id="content-price" class="vine-tab-content">
+          <div style="margin-bottom: 24px;">
           <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Price Ranges</label>
           <div style="margin-bottom: 12px;">
             <label style="display: block; margin-bottom: 4px; color: #6b7280;">🟢 Green (minimum): $</label>
@@ -670,6 +697,42 @@
             font-weight: 600;
             cursor: pointer;
           ">Clear Cache</button>
+        </div>
+        </div>
+
+        <div id="content-searches" class="vine-tab-content" style="display: none;">
+          <div style="margin-bottom: 20px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Add New Search</label>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <input type="text" id="new-search-name" placeholder="Search name (e.g., 'Electronics')"
+                style="flex: 1; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="new-search-term" placeholder="Search term (e.g., 'laptop')"
+                style="flex: 1; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
+              <button id="add-search-btn" style="
+                padding: 8px 16px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                white-space: nowrap;
+              ">Add Search</button>
+            </div>
+            <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">
+              Saved searches will appear as quick links below
+            </div>
+          </div>
+
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 12px; font-weight: 600; color: #374151;">Your Saved Searches</label>
+            <div id="saved-searches-list" style="display: flex; flex-direction: column; gap: 8px;">
+              ${savedSearches.length === 0 ? '<div style="padding: 20px; text-align: center; color: #9ca3af; background: #f9fafb; border-radius: 6px;">No saved searches yet. Add one above!</div>' : ''}
+            </div>
+          </div>
         </div>
 
         <div id="vine-status" style="
@@ -757,6 +820,158 @@
 
         showStatus('Settings saved!');
       });
+
+      // Tab switching
+      const tabPrice = dialog.querySelector('#tab-price');
+      const tabSearches = dialog.querySelector('#tab-searches');
+      const contentPrice = dialog.querySelector('#content-price');
+      const contentSearches = dialog.querySelector('#content-searches');
+
+      function switchTab(tab) {
+        const tabs = [tabPrice, tabSearches];
+        const contents = [contentPrice, contentSearches];
+
+        tabs.forEach(t => {
+          t.style.borderBottomColor = 'transparent';
+          t.style.color = '#6b7280';
+        });
+        contents.forEach(c => c.style.display = 'none');
+
+        if (tab === 'price') {
+          tabPrice.style.borderBottomColor = '#667eea';
+          tabPrice.style.color = '#667eea';
+          contentPrice.style.display = 'block';
+        } else {
+          tabSearches.style.borderBottomColor = '#667eea';
+          tabSearches.style.color = '#667eea';
+          contentSearches.style.display = 'block';
+        }
+      }
+
+      tabPrice.addEventListener('click', () => switchTab('price'));
+      tabSearches.addEventListener('click', () => switchTab('searches'));
+
+      // Saved searches functionality
+      const addSearchBtn = dialog.querySelector('#add-search-btn');
+      const newSearchName = dialog.querySelector('#new-search-name');
+      const newSearchTerm = dialog.querySelector('#new-search-term');
+      const searchesList = dialog.querySelector('#saved-searches-list');
+
+      function renderSearches() {
+        const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+
+        if (searches.length === 0) {
+          searchesList.innerHTML = '<div style="padding: 20px; text-align: center; color: #9ca3af; background: #f9fafb; border-radius: 6px;">No saved searches yet. Add one above!</div>';
+          return;
+        }
+
+        searchesList.innerHTML = searches.map((search, index) => `
+          <div style="display: flex; gap: 8px; align-items: center; padding: 10px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <button data-search-index="${index}" class="search-go-btn" style="
+              flex: 1;
+              padding: 8px 12px;
+              background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+              color: white;
+              border: none;
+              border-radius: 6px;
+              font-size: 14px;
+              font-weight: 600;
+              cursor: pointer;
+              text-align: left;
+            ">${search.name}</button>
+            <button data-search-index="${index}" class="search-edit-btn" style="
+              padding: 8px 12px;
+              background: #f59e0b;
+              color: white;
+              border: none;
+              border-radius: 6px;
+              font-size: 12px;
+              cursor: pointer;
+            ">✏️</button>
+            <button data-search-index="${index}" class="search-delete-btn" style="
+              padding: 8px 12px;
+              background: #ef4444;
+              color: white;
+              border: none;
+              border-radius: 6px;
+              font-size: 12px;
+              cursor: pointer;
+            ">🗑️</button>
+          </div>
+        `).join('');
+
+        // Add event listeners
+        searchesList.querySelectorAll('.search-go-btn').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            const index = parseInt(e.target.dataset.searchIndex);
+            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+            const search = searches[index];
+            if (search) {
+              window.location.href = `https://www.amazon.com/vine/vine-items?search=${encodeURIComponent(search.term)}`;
+            }
+          });
+        });
+
+        searchesList.querySelectorAll('.search-edit-btn').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            const index = parseInt(e.target.dataset.searchIndex);
+            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+            const search = searches[index];
+            if (search) {
+              const newName = prompt('Enter new name for this search:', search.name);
+              if (newName && newName.trim()) {
+                searches[index].name = newName.trim();
+                setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+                renderSearches();
+                showStatus('Search renamed!');
+              }
+            }
+          });
+        });
+
+        searchesList.querySelectorAll('.search-delete-btn').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            const index = parseInt(e.target.dataset.searchIndex);
+            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+            if (confirm(`Delete search "${searches[index].name}"?`)) {
+              searches.splice(index, 1);
+              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+              renderSearches();
+              showStatus('Search deleted!');
+            }
+          });
+        });
+      }
+
+      addSearchBtn.addEventListener('click', () => {
+        const name = newSearchName.value.trim();
+        const term = newSearchTerm.value.trim();
+
+        if (!name || !term) {
+          showStatus('Please enter both a name and search term', true);
+          return;
+        }
+
+        const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+        searches.push({ name, term });
+        setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+
+        newSearchName.value = '';
+        newSearchTerm.value = '';
+        renderSearches();
+        showStatus('Search added!');
+      });
+
+      // Allow Enter key to add search
+      [newSearchName, newSearchTerm].forEach(input => {
+        input.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') {
+            addSearchBtn.click();
+          }
+        });
+      });
+
+      renderSearches();
 
       clearCacheBtn.addEventListener('click', () => {
         if (confirm('Are you sure you want to clear all cached prices?')) {
