@@ -3,11 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.14
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
-<<<<<<< HEAD
 // @author       Andrew Porzio
-=======
-// @author       You
->>>>>>> e05826e (initial upload)
 // @match        https://www.amazon.com/vine/*
 // @match        https://www.amazon.com/*/vine/*
 // @match        https://vine.amazon.com/*
@@ -66,7 +62,7 @@
     } catch (e) {
       // GM API failed, fall through to localStorage
     }
-    
+
     // Fallback to localStorage
     try {
       const storageKey = STORAGE_PREFIX + key;
@@ -91,7 +87,7 @@
     } catch (e) {
       // GM API failed, fall through to localStorage
     }
-    
+
     // Fallback to localStorage
     try {
       const storageKey = STORAGE_PREFIX + key;
@@ -125,7 +121,7 @@
     if (!thresholdsLoaded) {
       thresholdsLoaded = true;
       let thresholds = getStorage(CONFIG.THRESHOLDS_KEY, CONFIG.DEFAULT_THRESHOLDS);
-      
+
       // Migrate old format (HIGH/MEDIUM) to new format (GREEN_MIN/YELLOW_MIN/RED_MAX)
       if (thresholds.HIGH !== undefined && thresholds.MEDIUM !== undefined) {
         thresholds = {
@@ -135,12 +131,12 @@
         };
         setStorage(CONFIG.THRESHOLDS_KEY, thresholds);
       }
-      
+
       // Ensure all required fields exist
       if (!thresholds.GREEN_MIN) thresholds.GREEN_MIN = CONFIG.DEFAULT_THRESHOLDS.GREEN_MIN;
       if (!thresholds.YELLOW_MIN) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
       if (!thresholds.RED_MAX) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
-      
+
       cachedThresholds = thresholds;
       callback(cachedThresholds);
     } else {
@@ -261,7 +257,7 @@
     GM_xmlhttpRequest({
       method: 'GET',
       url: url,
-      onload: function(response) {
+      onload: function (response) {
         if (response.status === 200) {
           const price = extractPriceFromHTML(response.responseText);
           if (price !== null) {
@@ -288,7 +284,7 @@
           }
         }
       },
-      onerror: function(error) {
+      onerror: function (error) {
         if (retries > 0) {
           const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
           setTimeout(() => {
@@ -304,7 +300,7 @@
   // UI helpers
   function getPriceColorSync(price) {
     let thresholds = cachedThresholds || CONFIG.DEFAULT_THRESHOLDS;
-    
+
     // Migrate old format (HIGH/MEDIUM) to new format (GREEN_MIN/YELLOW_MIN)
     if (thresholds.HIGH !== undefined && thresholds.MEDIUM !== undefined) {
       thresholds = {
@@ -315,7 +311,7 @@
       cachedThresholds = thresholds;
       setStorage(CONFIG.THRESHOLDS_KEY, thresholds);
     }
-    
+
     if (price >= thresholds.GREEN_MIN) {
       return 'green';
     } else if (price >= thresholds.YELLOW_MIN) {
@@ -589,7 +585,7 @@
       `;
 
       let thresholds = getStorage(CONFIG.THRESHOLDS_KEY, CONFIG.DEFAULT_THRESHOLDS);
-      
+
       // Migrate old format to new format
       if (thresholds.HIGH !== undefined && thresholds.MEDIUM !== undefined) {
         thresholds = {
@@ -599,12 +595,12 @@
         };
         setStorage(CONFIG.THRESHOLDS_KEY, thresholds);
       }
-      
+
       // Ensure all required fields exist
       if (!thresholds.GREEN_MIN) thresholds.GREEN_MIN = CONFIG.DEFAULT_THRESHOLDS.GREEN_MIN;
       if (!thresholds.YELLOW_MIN) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
       if (!thresholds.RED_MAX) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
-      
+
       const hideCached = getStorage(CONFIG.HIDE_CACHED_KEY, false);
 
       dialog.innerHTML = `
@@ -900,8 +896,8 @@
 
   // Initialize
   function init() {
-    getThresholds(() => {});
-    getHideCached(() => {});
+    getThresholds(() => { });
+    getHideCached(() => { });
     processVineItems(true);
 
     setTimeout(() => {
