@@ -703,12 +703,8 @@
         <div id="content-searches" class="vine-tab-content">
           <div style="margin-bottom: 20px;">
             <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Add New Search</label>
-            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-              <input type="text" id="new-search-name" placeholder="Search name (e.g., 'Electronics')"
-                style="flex: 1; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-            </div>
             <div style="display: flex; gap: 8px;">
-              <input type="text" id="new-search-term" placeholder="Search term (e.g., 'laptop')"
+              <input type="text" id="new-search-term" placeholder="Enter search term (e.g., 'laptop', 'headphones')" 
                 style="flex: 1; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
               <button id="add-search-btn" style="
                 padding: 8px 16px;
@@ -853,7 +849,6 @@
 
       // Saved searches functionality
       const addSearchBtn = dialog.querySelector('#add-search-btn');
-      const newSearchName = dialog.querySelector('#new-search-name');
       const newSearchTerm = dialog.querySelector('#new-search-term');
       const searchesList = dialog.querySelector('#saved-searches-list');
 
@@ -944,31 +939,27 @@
       }
 
       addSearchBtn.addEventListener('click', () => {
-        const name = newSearchName.value.trim();
         const term = newSearchTerm.value.trim();
 
-        if (!name || !term) {
-          showStatus('Please enter both a name and search term', true);
+        if (!term) {
+          showStatus('Please enter a search term', true);
           return;
         }
 
         const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-        searches.push({ name, term });
+        searches.push({ name: term, term: term });
         setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
 
-        newSearchName.value = '';
         newSearchTerm.value = '';
         renderSearches();
         showStatus('Search added!');
       });
 
       // Allow Enter key to add search
-      [newSearchName, newSearchTerm].forEach(input => {
-        input.addEventListener('keypress', (e) => {
-          if (e.key === 'Enter') {
-            addSearchBtn.click();
-          }
-        });
+      newSearchTerm.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          addSearchBtn.click();
+        }
       });
 
       renderSearches();
