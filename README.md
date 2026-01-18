@@ -23,6 +23,11 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
    - You should see a "Vine Tools" link in the header navigation
    - Price badges should appear on Vine items
 
+## Screenshots
+
+![Amazon Vine Price Display Preview](vine_extension_preview.png)
+*Color-coded price badges on Amazon Vine items*
+
 ## Features
 
 - **Price Display**: Shows product prices on Amazon Vine items with color-coded badges
