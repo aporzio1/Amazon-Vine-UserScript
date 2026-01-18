@@ -611,17 +611,19 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
           <h2 style="margin: 0; font-size: 24px; color: #1f2937;">Vine Tools</h2>
           <a href="https://www.buymeacoffee.com/aporzio" target="_blank" style="
-            display: inline-flex;
-            align-items: center;
-            background-color: #40DCA5;
-            color: #ffffff;
-            padding: 6px 12px;
-            border-radius: 5px;
-            text-decoration: none;
-            font-family: 'Cookie', cursive;
-            font-size: 18px;
-            font-weight: 500;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex !important;
+            align-items: center !important;
+            background-color: #40DCA5 !important;
+            color: #ffffff !important;
+            padding: 6px 12px !important;
+            border-radius: 5px !important;
+            text-decoration: none !important;
+            font-family: 'Cookie', cursive, sans-serif !important;
+            font-size: 18px !important;
+            font-weight: 500 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            opacity: 1 !important;
+            visibility: visible !important;
           ">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;">
               <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path>
@@ -630,7 +632,7 @@
               <line x1="10" y1="1" x2="10" y2="4"></line>
               <line x1="14" y1="1" x2="14" y2="4"></line>
             </svg>
-            <span style="color: #ffffff; text-shadow: 0 1px 2px rgba(0,0,0,0.1);">Buy me a coffee</span>
+            <span style="color: #ffffff !important; text-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;">Buy me a coffee</span>
           </a>
         </div>
         
@@ -1043,6 +1045,7 @@
   }
 
   addStyle(`
+    @import url('https://fonts.googleapis.com/css?family=Cookie');
     .vine-price-badge {
       position: absolute;
       top: 8px;
