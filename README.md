@@ -8,6 +8,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
    - **Tampermonkey**: [Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) | [Firefox](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/) | [Safari](https://apps.apple.com/us/app/tampermonkey/id1482490089)
    - **Violentmonkey**: [Chrome](https://chrome.google.com/webstore/detail/violentmonkey/jinjaccalgkegednnccohejagnlnfdag) | [Firefox](https://addons.mozilla.org/en-US/firefox/addon/violentmonkey/)
    - **Greasemonkey**: [Firefox](https://addons.mozilla.org/en-US/firefox/addon/greasemonkey/)
+   - **Userscripts**: [Safari (iOS/macOS)](https://apps.apple.com/us/app/userscripts/id1463298887)
 
 2. **Install the script:**
    - Open `amazon-vine-price-display.user.js` in a text editor
@@ -50,7 +51,7 @@ The script extracts product ASINs from Vine item links, checks a local cache fir
 
 - ✅ Chrome/Edge (with Tampermonkey or Violentmonkey)
 - ✅ Firefox (with Tampermonkey, Violentmonkey, or Greasemonkey)
-- ✅ Safari (with Tampermonkey)
+- ✅ Safari (with Tampermonkey or Userscripts)
 - ✅ Opera (with Tampermonkey or Violentmonkey)
 
 ## Troubleshooting
