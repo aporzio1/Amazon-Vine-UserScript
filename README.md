@@ -20,7 +20,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 
 3. **Verify installation:**
    - Navigate to `https://vine.amazon.com` or `https://www.amazon.com/vine/`
-   - You should see a "Price Settings" link in the header navigation
+   - You should see a "Vine Tools" link in the header navigation
    - Price badges should appear on Vine items
 
 ## Features
@@ -32,16 +32,18 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **Customizable Price Ranges**: Set custom minimum prices for each color category
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
 - **Cache Indicator**: Shows 📦 icon for cached prices
-- **Settings UI**: Access settings from the "Price Settings" link in the header navigation
+- **Saved Searches**: Save your favorite search terms for quick 1-click access
+- **Settings UI**: Access settings from the "Vine Tools" link in the header navigation
 - **Hide Cached Items**: Toggle to hide items you've already viewed
 - **Auto-updates**: Automatically processes new items as you scroll
 
 ## Usage
 
-1. **Access Settings**: Click the "Price Settings" link in the header navigation on any Amazon Vine page
-2. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories
-3. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
-4. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
+1. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
+2. **Saved Searches**: Use the "Saved Searches" tab to add and manage your favorite search terms
+3. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
+4. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
+5. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
 
 ## How It Works
 
