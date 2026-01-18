@@ -608,7 +608,10 @@
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
 
       dialog.innerHTML = `
-        <h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1f2937;">Vine Tools</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <h2 style="margin: 0; font-size: 24px; color: #1f2937;">Vine Tools</h2>
+          <div id="bmc-container"></div>
+        </div>
         
         <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb;">
           <button id="tab-searches" class="vine-tab active" style="
@@ -741,6 +744,23 @@
           font-size: 14px;
         "></div>
       `;
+
+      // Inject BMC button
+      const bmcContainer = dialog.querySelector('#bmc-container');
+      if (bmcContainer) {
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js';
+        script.setAttribute('data-name', 'bmc-button');
+        script.setAttribute('data-slug', 'aporzio');
+        script.setAttribute('data-color', '#40DCA5');
+        script.setAttribute('data-emoji', '');
+        script.setAttribute('data-font', 'Cookie');
+        script.setAttribute('data-text', 'Buy me a coffee');
+        script.setAttribute('data-outline-color', '#000000');
+        script.setAttribute('data-font-color', '#ffffff');
+        script.setAttribute('data-coffee-color', '#FFDD00');
+        bmcContainer.appendChild(script);
+      }
 
       const saveBtn = dialog.querySelector('#vine-save-btn');
       const clearCacheBtn = dialog.querySelector('#vine-clear-cache-btn');
