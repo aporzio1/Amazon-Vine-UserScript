@@ -1,6 +1,49 @@
-# Amazon Vine Price Display - Saved Searches Feature
+# Amazon Vine Price Display - Change Log
 
-## Summary of Changes (v1.15)
+## Version 1.21 - Auto-Advance Feature
+
+### New Features Added
+
+1. **Auto-Advance Toggle**:
+   - New checkbox in Price Settings: "Auto-advance when all items hidden"
+   - When enabled (along with "Hide cached items"), automatically navigates to the next page when all items on the current page are hidden
+   - Repeats until it finds a page with non-hidden items
+   - Helpful for quickly skipping through pages of already-viewed items
+
+### Technical Changes
+
+1. **Version**: Updated from 1.20 to 1.21
+
+2. **New Storage Key**: `AUTO_ADVANCE_KEY: 'vine_auto_advance'`
+   - Stores boolean value for auto-advance preference
+
+3. **New Functions**:
+   - `getAutoAdvance(callback)`: Retrieves auto-advance setting
+   - `checkAndAutoAdvance()`: Checks if all items are hidden and navigates to next page
+
+4. **Logic Flow**:
+   - After processing items in `processBatch()`, calls `checkAndAutoAdvance()`
+   - After saving settings, calls `checkAndAutoAdvance()` to immediately check current page
+   - Waits 1 second after page load to ensure all items are processed
+   - Finds next page button using multiple selectors for compatibility
+   - Only advances if next page button exists and is not disabled
+
+### Files Modified
+
+- `amazon-vine-price-display.user.js` (main userscript)
+
+### Usage
+
+1. Click "Vine Tools" in the Vine header
+2. Go to "Price Settings" tab
+3. Enable "Hide cached items"
+4. Enable "Auto-advance when all items hidden"
+5. Click "Save Settings"
+6. The script will automatically skip to the next page if all items are hidden
+
+---
+
+## Version 1.15 - Saved Searches Feature
 
 ### New Features Added
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.20
+// @version      1.21
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -25,6 +25,7 @@
     CACHE_KEY: 'vine_price_cache',
     THRESHOLDS_KEY: 'vine_price_thresholds',
     HIDE_CACHED_KEY: 'vine_hide_cached',
+    AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 1000,
@@ -105,6 +106,8 @@
   let thresholdsLoaded = false;
   let hideCached = false;
   let hideCachedLoaded = false;
+  let autoAdvance = false;
+  let autoAdvanceLoaded = false;
 
   function getHideCached(callback) {
     if (hideCachedLoaded) {
@@ -114,6 +117,16 @@
     hideCachedLoaded = true;
     hideCached = getStorage(CONFIG.HIDE_CACHED_KEY, false);
     callback(hideCached);
+  }
+
+  function getAutoAdvance(callback) {
+    if (autoAdvanceLoaded) {
+      callback(autoAdvance);
+      return;
+    }
+    autoAdvanceLoaded = true;
+    autoAdvance = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
+    callback(autoAdvance);
   }
 
   function getThresholds(callback) {
@@ -458,6 +471,67 @@
             }
           });
         });
+
+        // Check if all items are hidden and auto-advance if enabled
+        checkAndAutoAdvance();
+      });
+    });
+  }
+
+  // Check if all items are hidden and auto-advance to next page
+  function checkAndAutoAdvance() {
+    getAutoAdvance((shouldAutoAdvance) => {
+      if (!shouldAutoAdvance) {
+        return;
+      }
+
+      getHideCached((shouldHide) => {
+        if (!shouldHide) {
+          return;
+        }
+
+        // Wait a bit to ensure all items have been processed
+        setTimeout(() => {
+          const selectors = [
+            '.vvp-item-tile',
+            '[data-recommendation-id]',
+            '.a-section.a-spacing-base'
+          ];
+
+          let allItems = [];
+          for (const selector of selectors) {
+            const found = document.querySelectorAll(selector);
+            if (found.length > 0) {
+              allItems = Array.from(found);
+              break;
+            }
+          }
+
+          if (allItems.length === 0) {
+            return;
+          }
+
+          // Check if all items are hidden
+          const allHidden = allItems.every(item => {
+            return item.dataset.vineCachedHidden === 'true' ||
+              getComputedStyle(item).display === 'none';
+          });
+
+          if (allHidden) {
+            // Find the next page button and click it
+            const nextButton = document.querySelector('li.a-last a') ||
+              document.querySelector('.a-pagination .a-last a') ||
+              document.querySelector('a[aria-label="Next page"]') ||
+              document.querySelector('.a-pagination li:last-child:not(.a-disabled) a');
+
+            if (nextButton && !nextButton.parentElement.classList.contains('a-disabled')) {
+              console.log('All items hidden, auto-advancing to next page...');
+              nextButton.click();
+            } else {
+              console.log('All items hidden but no next page available');
+            }
+          }
+        }, 1000); // Wait 1 second to ensure all items are processed
       });
     });
   }
@@ -605,6 +679,7 @@
       if (!thresholds.RED_MAX) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
 
       const hideCached = getStorage(CONFIG.HIDE_CACHED_KEY, false);
+      const autoAdvanceEnabled = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
 
       dialog.innerHTML = `
@@ -702,6 +777,17 @@
         </div>
 
         <div style="margin-bottom: 24px;">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="vine-auto-advance" ${autoAdvanceEnabled ? 'checked' : ''} 
+              style="margin-right: 8px; width: 18px; height: 18px;">
+            <span style="font-weight: 600; color: #374151;">Auto-advance when all items hidden</span>
+          </label>
+          <div style="font-size: 12px; color: #9ca3af; margin-top: 4px; margin-left: 26px;">
+            Automatically go to the next page when all items on the current page are hidden
+          </div>
+        </div>
+
+        <div style="margin-bottom: 24px;">
           <button id="vine-save-btn" style="
             width: 100%;
             padding: 12px;
@@ -777,6 +863,7 @@
       const yellowMinInput = dialog.querySelector('#vine-yellow-min');
       const redMaxInput = dialog.querySelector('#vine-red-max');
       const hideCachedCheckbox = dialog.querySelector('#vine-hide-cached');
+      const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
 
       function showStatus(message, isError = false) {
         statusDiv.textContent = message;
@@ -816,10 +903,13 @@
 
         setStorage(CONFIG.THRESHOLDS_KEY, newThresholds);
         setStorage(CONFIG.HIDE_CACHED_KEY, hideCachedCheckbox.checked);
+        setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
 
         cachedThresholds = newThresholds;
         hideCached = hideCachedCheckbox.checked;
         hideCachedLoaded = true;
+        autoAdvance = autoAdvanceCheckbox.checked;
+        autoAdvanceLoaded = true;
 
         // Update page
         const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
@@ -845,6 +935,9 @@
         });
 
         showStatus('Settings saved!');
+
+        // Check if we should auto-advance after settings change
+        checkAndAutoAdvance();
       });
 
       // Tab switching
