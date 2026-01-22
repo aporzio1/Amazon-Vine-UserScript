@@ -938,6 +938,14 @@
 
         // Check if we should auto-advance after settings change
         checkAndAutoAdvance();
+
+        // Close the modal after a brief delay to show the success message
+        setTimeout(() => {
+          if (settingsModal) {
+            document.body.removeChild(settingsModal);
+            settingsModal = null;
+          }
+        }, 800);
       });
 
       // Tab switching

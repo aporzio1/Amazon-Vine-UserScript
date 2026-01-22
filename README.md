@@ -40,6 +40,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **Saved Searches**: Save your favorite search terms for quick 1-click access
 - **Settings UI**: Access settings from the "Vine Tools" link in the header navigation
 - **Hide Cached Items**: Toggle to hide items you've already viewed
+- **Auto-Advance Pages**: Automatically skip to the next page when all items are hidden (requires "Hide Cached Items" to be enabled)
 - **Auto-updates**: Automatically processes new items as you scroll
 
 ## Usage
@@ -48,7 +49,8 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 2. **Saved Searches**: Use the "Saved Searches" tab to add and manage your favorite search terms
 3. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
 4. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
-5. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
+5. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
+6. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
 
 ## How It Works
 
