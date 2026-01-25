@@ -28,7 +28,7 @@
     AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
-    MAX_CACHE_SIZE: 1000,
+    MAX_CACHE_SIZE: 50000, // Optimized for high capacity
     MAX_RETRIES: 3,
     RETRY_BASE_DELAY: 1000,
     MUTATION_DEBOUNCE: 50,
@@ -108,6 +108,10 @@
   let hideCachedLoaded = false;
   let autoAdvance = false;
   let autoAdvanceLoaded = false;
+
+  // Cache optimization
+  const pendingCacheUpdates = new Map();
+  let cacheUpdateTimeout = null;
 
   function getHideCached(callback) {
     if (hideCachedLoaded) {
@@ -219,14 +223,40 @@
     });
   }
 
-  function setCachedPrice(asin, price) {
+  function flushCacheUpdates() {
+    if (pendingCacheUpdates.size === 0) return;
+
     getCache((cache) => {
-      cache[asin] = {
-        price: price,
-        timestamp: Date.now()
-      };
+      // Apply all pending updates
+      pendingCacheUpdates.forEach((value, key) => {
+        cache[key] = value;
+      });
+      pendingCacheUpdates.clear();
+
+      // Save to storage (triggering cleanup and limit)
       setCache(cache);
     });
+  }
+
+  // Ensure cache is saved before navigating away
+  window.addEventListener('beforeunload', () => {
+    if (pendingCacheUpdates.size > 0) {
+      flushCacheUpdates();
+    }
+  });
+
+  function setCachedPrice(asin, price) {
+    // Add to pending updates
+    pendingCacheUpdates.set(asin, {
+      price: price,
+      timestamp: Date.now()
+    });
+
+    // Debounce the save operation (2 seconds)
+    if (cacheUpdateTimeout) {
+      clearTimeout(cacheUpdateTimeout);
+    }
+    cacheUpdateTimeout = setTimeout(flushCacheUpdates, 2000);
   }
 
   // Price extraction
