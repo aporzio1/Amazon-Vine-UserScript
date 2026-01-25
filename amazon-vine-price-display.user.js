@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.22.02
+// @version      1.23.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -112,6 +112,16 @@
   // Cache optimization
   const pendingCacheUpdates = new Map();
   let cacheUpdateTimeout = null;
+  let memoryCache = null; // In-memory cache to avoid repeated storage reads
+  let cacheLoaded = false;
+  let lastCleanupTime = 0;
+  const CLEANUP_INTERVAL = 60 * 60 * 1000; // Clean up once per hour max
+
+  // Selector optimization
+  let cachedSelector = null;
+
+  // Performance tracking
+  let itemsProcessedThisSession = 0;
 
   function getHideCached(callback) {
     if (hideCachedLoaded) {
@@ -165,13 +175,39 @@
   }
 
   function getCache(callback) {
-    const cache = getStorage(CONFIG.CACHE_KEY, {});
-    callback(cache);
+    if (memoryCache !== null) {
+      // Return cached version immediately
+      callback(memoryCache);
+      return;
+    }
+
+    if (!cacheLoaded) {
+      cacheLoaded = true;
+      memoryCache = getStorage(CONFIG.CACHE_KEY, {});
+
+      // Perform initial cleanup if needed
+      const now = Date.now();
+      if (now - lastCleanupTime > CLEANUP_INTERVAL) {
+        memoryCache = cleanupExpiredCache(memoryCache);
+        lastCleanupTime = now;
+      }
+    }
+
+    callback(memoryCache);
   }
 
   function setCache(cache, callback) {
-    const cleaned = cleanupExpiredCache(cache);
-    const limited = enforceCacheSizeLimit(cleaned);
+    const now = Date.now();
+    let toSave = cache;
+
+    // Only clean up if enough time has passed (throttle expensive operation)
+    if (now - lastCleanupTime > CLEANUP_INTERVAL) {
+      toSave = cleanupExpiredCache(cache);
+      lastCleanupTime = now;
+    }
+
+    const limited = enforceCacheSizeLimit(toSave);
+    memoryCache = limited; // Update in-memory cache
     setStorage(CONFIG.CACHE_KEY, limited);
     if (callback) callback();
   }
@@ -227,10 +263,12 @@
     if (pendingCacheUpdates.size === 0) return;
 
     getCache((cache) => {
-      // Apply all pending updates
+      // Apply all pending updates to in-memory cache
       pendingCacheUpdates.forEach((value, key) => {
         cache[key] = value;
       });
+
+      itemsProcessedThisSession += pendingCacheUpdates.size;
       pendingCacheUpdates.clear();
 
       // Save to storage (triggering cleanup and limit)
@@ -458,8 +496,11 @@
 
     if (itemData.length === 0) return;
 
+    // Batch style checks - only check first item and apply to all if needed
+    const needsPositioning = itemData.length > 0 && getComputedStyle(itemData[0].item).position === 'static';
+
     itemData.forEach(({ item }) => {
-      if (getComputedStyle(item).position === 'static') {
+      if (needsPositioning) {
         item.style.position = 'relative';
       }
       item.dataset.vinePriceProcessed = 'true';
@@ -574,11 +615,27 @@
     ];
 
     let items = [];
-    for (const selector of selectors) {
-      const found = document.querySelectorAll(selector);
+
+    // Try cached selector first for performance
+    if (cachedSelector) {
+      const found = document.querySelectorAll(cachedSelector);
       if (found.length > 0) {
         items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
-        break;
+      } else {
+        // Cached selector no longer works, reset it
+        cachedSelector = null;
+      }
+    }
+
+    // If no cached selector or it didn't work, try all selectors
+    if (items.length === 0) {
+      for (const selector of selectors) {
+        const found = document.querySelectorAll(selector);
+        if (found.length > 0) {
+          items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
+          cachedSelector = selector; // Cache the working selector
+          break;
+        }
       }
     }
 
@@ -600,6 +657,29 @@
     }
 
     mutationObserver = new MutationObserver((mutations) => {
+      // Filter mutations to only process relevant changes
+      const hasRelevantChanges = mutations.some(mutation => {
+        // Only process if nodes were added
+        if (mutation.addedNodes.length === 0) return false;
+
+        // Check if any added nodes or their children contain Vine items
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType === 1) { // Element node
+            if (node.classList && (
+              node.classList.contains('vvp-item-tile') ||
+              node.hasAttribute('data-recommendation-id') ||
+              node.querySelector('.vvp-item-tile') ||
+              node.querySelector('[data-recommendation-id]')
+            )) {
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+
+      if (!hasRelevantChanges) return;
+
       if (processingTimeout) {
         clearTimeout(processingTimeout);
       }
