@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.24.00
+// @version      1.24.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -733,7 +733,7 @@
   // Color Filter UI
   function createColorFilterUI() {
     // Check if filter already exists
-    if (document.getElementById('vine-color-filter')) {
+    if (document.getElementById('vine-color-filter-wrapper')) {
       return;
     }
 
@@ -748,18 +748,26 @@
       return;
     }
 
-    const filterContainer = document.createElement('div');
-    filterContainer.id = 'vine-color-filter';
-    filterContainer.style.cssText = `
+    // Create wrapper for right alignment
+    const filterWrapper = document.createElement('div');
+    filterWrapper.id = 'vine-color-filter-wrapper';
+    filterWrapper.style.cssText = `
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 16px;
       position: sticky;
       top: 0;
       z-index: 1000;
+    `;
+
+    const filterContainer = document.createElement('div');
+    filterContainer.id = 'vine-color-filter';
+    filterContainer.style.cssText = `
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       padding: 12px 20px;
-      margin-bottom: 16px;
       border-radius: 8px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 20px;
       flex-wrap: wrap;
@@ -838,8 +846,11 @@
       filterContainer.appendChild(checkboxWrapper);
     });
 
-    // Insert the filter at the top of the content area
-    contentArea.insertBefore(filterContainer, contentArea.firstChild);
+    // Add filter container to wrapper
+    filterWrapper.appendChild(filterContainer);
+
+    // Insert the wrapper at the top of the content area
+    contentArea.insertBefore(filterWrapper, contentArea.firstChild);
   }
 
   // Apply color filter to all items on the page
