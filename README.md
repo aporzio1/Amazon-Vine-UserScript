@@ -39,6 +39,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
   - Filter bar stays visible while scrolling (sticky positioning)
   - Settings persist across sessions
 - **AI Review Generator**: Generate high-quality Amazon Vine reviews using AI
+  - **Works on ALL Amazon product pages** (not just Vine items)
   - Powered by OpenAI GPT-3.5-turbo
   - Follows Vine Voice guidelines (unbiased, honest, insightful)
   - Customizable with star rating and your own comments

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.00
+// @version      1.25.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -10,6 +10,8 @@
 // @match        https://www.amazon.com/*/vine/*
 // @match        https://vine.amazon.com/*
 // @match        https://vine.amazon.com/**/*
+// @match        https://www.amazon.com/*/dp/*
+// @match        https://www.amazon.com/dp/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
@@ -1779,24 +1781,34 @@ Please generate a review with a title.`;
 
   // Initialize
   function init() {
-    getThresholds(() => { });
-    getHideCached(() => { });
-    getColorFilter(() => { });
-    processVineItems(true);
+    // Check if we're on a Vine page
+    const isVinePage = window.location.href.includes('/vine/') ||
+      window.location.hostname.includes('vine.amazon.com');
 
-    setTimeout(() => {
-      getCache((cache) => {
-        const cleaned = cleanupExpiredCache(cache);
-        if (Object.keys(cleaned).length !== Object.keys(cache).length) {
-          setCache(cleaned);
-        }
-      });
-    }, 0);
+    // Only run Vine-specific features on Vine pages
+    if (isVinePage) {
+      getThresholds(() => { });
+      getHideCached(() => { });
+      getColorFilter(() => { });
+      processVineItems(true);
 
-    observePageChanges();
-    createSettingsUI();
-    createColorFilterUI();
+      setTimeout(() => {
+        getCache((cache) => {
+          const cleaned = cleanupExpiredCache(cache);
+          if (Object.keys(cleaned).length !== Object.keys(cache).length) {
+            setCache(cleaned);
+          }
+        });
+      }, 0);
+
+      observePageChanges();
+      createSettingsUI();
+      createColorFilterUI();
+    }
+
+    // Always run review generator on product pages (works on all Amazon product pages)
     createReviewGeneratorUI();
+
     console.log('Amazon Vine Price Display userscript loaded');
   }
 

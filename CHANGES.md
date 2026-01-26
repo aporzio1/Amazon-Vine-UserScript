@@ -1,5 +1,35 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.25.01 - Universal Review Generator
+
+### Enhancements
+
+1. **AI Review Generator Now Works on All Amazon Product Pages**:
+   - Previously limited to Vine pages only
+   - Now available on ANY Amazon product page (/dp/ URLs)
+   - Useful for writing reviews for all Amazon purchases, not just Vine items
+   - Other features (price display, color filter, etc.) remain Vine-only
+
+### Technical Changes
+
+1. **Version**: Updated from 1.25.00 to 1.25.01
+
+2. **New @match Directives**:
+   - Added `@match https://www.amazon.com/*/dp/*`
+   - Added `@match https://www.amazon.com/dp/*`
+   - Allows script to run on all Amazon product pages
+
+3. **Conditional Feature Loading**:
+   - Added `isVinePage` check in init function
+   - Vine-specific features only load on Vine pages
+   - AI Review Generator loads on all product pages
+
+### Files Modified
+
+- `amazon-vine-price-display.user.js` (main userscript)
+
+---
+
 ## Version 1.25.00 - AI Review Generator
 
 ### New Features Added
