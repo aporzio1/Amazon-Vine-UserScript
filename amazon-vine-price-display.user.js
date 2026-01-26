@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.07
+// @version      1.25.08
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -449,16 +449,20 @@
   // Apply color filter to an item
   function applyColorFilter(item, color) {
     getColorFilter((filter) => {
-      if (!filter[color]) {
-        item.style.display = 'none';
-        item.dataset.vineColorFiltered = 'true';
-      } else {
-        // Only show if not hidden by cache filter
-        if (item.dataset.vineCachedHidden !== 'true') {
+      getHideCached((shouldHideCached) => {
+        const isCached = item.dataset.vineIsCached === 'true';
+
+        if (isCached && shouldHideCached) {
+          item.style.display = 'none';
+          item.dataset.vineHidden = 'true';
+        } else if (!filter[color]) {
+          item.style.display = 'none';
+          item.dataset.vineHidden = 'true';
+        } else {
           item.style.display = '';
+          item.dataset.vineHidden = 'false';
         }
-        item.dataset.vineColorFiltered = 'false';
-      }
+      });
     });
   }
 
@@ -489,12 +493,8 @@
     const cached = cachedData && cachedData.hasOwnProperty(asin) ? cachedData[asin] : null;
 
     if (cached) {
+      item.dataset.vineIsCached = 'true';
       getHideCached((shouldHide) => {
-        if (shouldHide) {
-          item.style.display = 'none';
-          item.dataset.vineCachedHidden = 'true';
-          return;
-        }
         const color = getPriceColorSync(cached.price);
         const badge = createPriceBadge(cached.price, true, color);
         item.appendChild(badge);
@@ -551,11 +551,7 @@
         itemData.forEach(({ item, asin, url }) => {
           const cached = cachedResults[asin];
           if (cached && cached.price !== undefined && cached.price !== null) {
-            if (shouldHide) {
-              item.style.display = 'none';
-              item.dataset.vineCachedHidden = 'true';
-              return;
-            }
+            item.dataset.vineIsCached = 'true';
             const color = getPriceColorSync(cached.price);
             const badge = createPriceBadge(cached.price, true, color);
             item.appendChild(badge);
@@ -797,6 +793,59 @@
       { name: 'red', label: '🔴 Red (<$50)', color: '#ef4444' }
     ];
 
+    // Hide Cached Items Toggle
+    const hideCachedWrapper = document.createElement('label');
+    hideCachedWrapper.style.cssText = `
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.2);
+      padding: 8px 12px;
+      border-radius: 6px;
+      transition: background 0.2s ease;
+      user-select: none;
+      margin-right: 8px; /* Separator */
+      border-right: 1px solid rgba(255, 255, 255, 0.3);
+      padding-right: 16px;
+    `;
+    hideCachedWrapper.onmouseover = () => {
+      hideCachedWrapper.style.background = 'rgba(255, 255, 255, 0.3)';
+    };
+    hideCachedWrapper.onmouseout = () => {
+      hideCachedWrapper.style.background = 'rgba(255, 255, 255, 0.2)';
+    };
+
+    const hideCachedCheckbox = document.createElement('input');
+    hideCachedCheckbox.type = 'checkbox';
+    hideCachedCheckbox.id = 'vine-filter-hide-cached';
+    hideCachedCheckbox.checked = getStorage(CONFIG.HIDE_CACHED_KEY, false);
+    hideCachedCheckbox.style.cssText = `
+      margin-right: 8px;
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    `;
+
+    const hideCachedLabel = document.createElement('span');
+    hideCachedLabel.style.cssText = `
+      font-size: 14px;
+      font-weight: 500;
+      color: white;
+    `;
+    hideCachedLabel.textContent = 'Hide Cached 📦';
+
+    hideCachedCheckbox.addEventListener('change', (e) => {
+      hideCached = e.target.checked;
+      hideCachedLoaded = true;
+      setStorage(CONFIG.HIDE_CACHED_KEY, e.target.checked);
+      // Apply filter to all items on the page
+      applyColorFilterToAllItems();
+    });
+
+    hideCachedWrapper.appendChild(hideCachedCheckbox);
+    hideCachedWrapper.appendChild(hideCachedLabel);
+    filterContainer.appendChild(hideCachedWrapper);
+
     colors.forEach(({ name, label: colorLabel, color }) => {
       const checkboxWrapper = document.createElement('label');
       checkboxWrapper.style.cssText = `
@@ -861,24 +910,30 @@
   // Apply color filter to all items on the page
   function applyColorFilterToAllItems() {
     getColorFilter((filter) => {
-      const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
-      allItems.forEach(item => {
-        const badge = item.querySelector('.vine-price-badge');
-        if (badge) {
-          const color = badge.getAttribute('data-price-color');
-          if (color) {
-            if (!filter[color]) {
-              item.style.display = 'none';
-              item.dataset.vineColorFiltered = 'true';
-            } else {
-              // Only show if not hidden by cache filter
-              if (item.dataset.vineCachedHidden !== 'true') {
+      getHideCached((shouldHideCached) => {
+        const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
+        allItems.forEach(item => {
+          const badge = item.querySelector('.vine-price-badge');
+          if (badge) {
+            const color = badge.getAttribute('data-price-color');
+            const isCached = item.dataset.vineIsCached === 'true' || !!item.querySelector('.vine-cache-indicator');
+
+            if (color) {
+              if (isCached && shouldHideCached) {
+                item.style.display = 'none';
+                item.dataset.vineHidden = 'true';
+              } else if (!filter[color]) {
+                item.style.display = 'none';
+                item.dataset.vineHidden = 'true';
+              } else {
                 item.style.display = '';
+                item.dataset.vineHidden = 'false';
               }
-              item.dataset.vineColorFiltered = 'false';
             }
           }
-        }
+        });
+        // Check for auto-advance after re-filtering
+        checkAndAutoAdvance();
       });
     });
   }
@@ -1492,16 +1547,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           </div>
         </div>
 
-        <div style="margin-bottom: 24px;">
-          <label style="display: flex; align-items: center; cursor: pointer;">
-            <input type="checkbox" id="vine-hide-cached" ${hideCached ? 'checked' : ''} 
-              style="margin-right: 8px; width: 18px; height: 18px;">
-            <span style="font-weight: 600; color: #374151;">Hide cached items</span>
-          </label>
-          <div style="font-size: 12px; color: #9ca3af; margin-top: 4px; margin-left: 26px;">
-            Hide items that have cached prices (already viewed)
-          </div>
-        </div>
+
 
         <div style="margin-bottom: 24px;">
           <label style="display: flex; align-items: center; cursor: pointer;">
@@ -1602,7 +1648,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       const greenMinInput = dialog.querySelector('#vine-green-min');
       const yellowMinInput = dialog.querySelector('#vine-yellow-min');
       const redMaxInput = dialog.querySelector('#vine-red-max');
-      const hideCachedCheckbox = dialog.querySelector('#vine-hide-cached');
+
       const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
       const openaiKeyInput = dialog.querySelector('#vine-openai-key');
 
@@ -1643,13 +1689,11 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         };
 
         setStorage(CONFIG.THRESHOLDS_KEY, newThresholds);
-        setStorage(CONFIG.HIDE_CACHED_KEY, hideCachedCheckbox.checked);
         setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
 
         cachedThresholds = newThresholds;
-        hideCached = hideCachedCheckbox.checked;
-        hideCachedLoaded = true;
+        autoAdvance = autoAdvanceCheckbox.checked;
         autoAdvance = autoAdvanceCheckbox.checked;
         autoAdvanceLoaded = true;
 
@@ -1663,16 +1707,10 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
             if (!isNaN(price)) {
               const color = getPriceColorSync(price);
               badge.className = `vine-price-badge vine-price-${color}`;
-            }
-          }
 
-          const cacheIndicator = item.querySelector('.vine-cache-indicator');
-          if (cacheIndicator && hideCached) {
-            item.style.display = 'none';
-            item.dataset.vineCachedHidden = 'true';
-          } else if (item.dataset.vineCachedHidden === 'true' && !hideCached) {
-            item.style.display = '';
-            item.dataset.vineCachedHidden = 'false';
+              // Re-apply filter since color might have changed
+              applyColorFilter(item, color);
+            }
           }
         });
 

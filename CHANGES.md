@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.25.08 - UX Improvements
+
+### UI Changes
+
+- **Improved Filter Controls**: Moved the "Hide Cached Items" toggle from the Settings menu to the sticky top filter bar. You can now toggle visibility of previously seen items instantly alongside the price color filters.
+
 ## Version 1.25.07 - Minor UI Improvements
 
 ### Fixes
