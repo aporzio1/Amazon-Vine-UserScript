@@ -40,11 +40,12 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
   - Settings persist across sessions
 - **AI Review Generator**: Generate high-quality Amazon Vine reviews using AI
   - **Works on ALL Amazon product pages** (not just Vine items)
+  - **Also works on review creation pages** - generate reviews directly while writing
   - Powered by OpenAI GPT-3.5-turbo
   - Follows Vine Voice guidelines (unbiased, honest, insightful)
   - Customizable with star rating and your own comments
   - One-click copy to clipboard
-  - Appears automatically on product pages
+  - Appears automatically on product pages and review forms
 - **Customizable Price Ranges**: Set custom minimum prices for each color category
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
 - **Cache Indicator**: Shows 📦 icon for cached prices

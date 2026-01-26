@@ -1,5 +1,74 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.25.03 - Natural Language Improvements
+
+### Enhancements
+
+1. **Significantly Improved AI Prompt for More Natural Reviews**:
+   - Reviews now sound much more human and less AI-generated
+   - Emphasizes casual, conversational language
+   - Uses personal pronouns, contractions, and varied sentence structure
+   - Includes specific instructions to avoid common "AI tells"
+   - Maintains all Amazon Vine Voice guidelines
+
+2. **Anti-AI Detection Features**:
+   - Avoids phrases like "As a...", "overall", "in conclusion"
+   - Prevents overly balanced pro/con structure
+   - Encourages authentic imperfections
+   - Focuses on specific personal observations
+   - Writes like texting a friend
+
+3. **Enhanced Prompt Engineering**:
+   - System prompt positions AI as actual customer
+   - User prompt emphasizes personal testing experience
+   - Better integration of user comments
+   - More natural sentiment handling
+
+### Technical Changes
+
+1. **Version**: Updated from 1.25.02 to 1.25.03
+
+2. **Prompt Improvements**:
+   - Expanded system prompt with natural language guidelines
+   - Added explicit list of AI tells to avoid
+   - Reframed user prompt to sound more personal
+   - Maintained all Amazon Vine Voice requirements
+
+### Files Modified
+
+- `amazon-vine-price-display.user.js` (main userscript)
+
+---
+
+## Version 1.25.02 - Review Page Support
+
+### Enhancements
+
+1. **AI Review Generator Now Works on Review Creation Pages**:
+   - Appears on Amazon's review creation page (`/review/create-review`)
+   - Perfect for Vine reviewers - generate reviews directly on the review form page
+   - Also works on regular product pages and review pages for non-Vine purchases
+   - Automatically detects page type and finds appropriate elements
+
+### Technical Changes
+
+1. **Version**: Updated from 1.25.01 to 1.25.02
+
+2. **New @match Directives**:
+   - Added `@match https://www.amazon.com/review/create-review*`
+   - Added `@match https://www.amazon.com/*/review/create-review*`
+
+3. **Smart Page Detection**:
+   - Detects if on product page (`/dp/`) or review page (`/review/create-review`)
+   - Different element selectors for each page type
+   - Extracts product title/description from review page when available
+
+### Files Modified
+
+- `amazon-vine-price-display.user.js` (main userscript)
+
+---
+
 ## Version 1.25.01 - Universal Review Generator
 
 ### Enhancements

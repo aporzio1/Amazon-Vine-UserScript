@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.01
+// @version      1.25.03
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -12,6 +12,8 @@
 // @match        https://vine.amazon.com/**/*
 // @match        https://www.amazon.com/*/dp/*
 // @match        https://www.amazon.com/dp/*
+// @match        https://www.amazon.com/review/create-review*
+// @match        https://www.amazon.com/*/review/create-review*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
@@ -891,25 +893,47 @@
 
     const sentiment = starRating >= 4 ? 'positive' : starRating >= 3 ? 'neutral' : 'negative';
 
-    const systemPrompt = `You are a helpful assistant that creates Top Tier Amazon Vine reviews. Follow these guidelines:
+    const systemPrompt = `You are writing an Amazon product review as a real customer who actually used this product. Your writing should sound completely natural and human - like you're telling a friend about your experience.
 
-Be unbiased: Whether positive, neutral, or negative, your review is about the experience with the product and what you liked and didn't like about it. Your reviews are independent opinions.
+CRITICAL: Write like a real person, not an AI. Use:
+- Casual, conversational language
+- Personal pronouns (I, my, me)
+- Contractions (it's, don't, I've)
+- Varied sentence lengths
+- Occasional minor imperfections that make it sound authentic
+- Specific details and personal observations
 
-Be honest: Write in a natural voice that comes through as genuine. This is what customers trust from Vine Voices - a solid honest review from another customer.
+Amazon Vine Voice Guidelines (follow these strictly):
 
-Be insightful yet specific: Reviews are about the product. Avoid vague, general, and repetitive comments. Share context that may help customers better assess the product and your experience with it, like information about your familiarity with the product type, how you used the product, and how long you used the product.
+Be unbiased: Whether positive, neutral, or negative, your review is about YOUR experience with the product and what YOU liked and didn't like about it. Your reviews are YOUR independent opinions and should not be influenced by anyone else.
 
-Check your review for basic grammar and sentence structure.
+Be honest: The honesty in an honest review will come through when you find a writing voice that comes natural to you. That's what customers can trust from Vine Voices - a solid honest review from another customer just like them who happens to spend their free time reviewing new products.
 
-Format: Include a title on the first line, then the review body. 2 paragraphs or less. Do NOT mention the star rating number.`;
+Be insightful yet specific: Reviews are about the product. Avoid vague, general, and repetitive comments. Share context that may help customers better assess the product and your experience with it, like:
+- Your familiarity with this type of product
+- How you used the product
+- How long you used the product
+- Specific situations where it worked well or didn't
 
-    const userPrompt = `Product Description: ${productDescription}
+Check your review for basic grammar and sentence structure (but don't make it sound overly polished or formal).
 
-User's Additional Comments: ${userComments || 'None provided'}
+AVOID these AI tells:
+- Starting with "As a..." or "As someone who..."
+- Phrases like "overall," "in conclusion," "it's worth noting"
+- Overly balanced structure (pro, con, pro, con)
+- Perfect grammar with no personality
+- Generic statements that could apply to any product
 
-Sentiment: This should be a ${sentiment} review.
+Format: Title on first line, then review body. 2 paragraphs or less. Do NOT mention the star rating number.`;
 
-Please generate a review with a title.`;
+    const userPrompt = `Write a review for this product as if you personally tested it.
+
+Product: ${productDescription}
+
+${userComments ? `Personal notes from your testing: ${userComments}` : 'Write based on the product description and imagine realistic use cases.'}
+
+This should be a ${sentiment} review. Write naturally - like you're texting a friend about this product. Include specific details that make it believable you actually used it.`;
+
 
     try {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -943,8 +967,11 @@ Please generate a review with a title.`;
   }
 
   function createReviewGeneratorUI() {
-    // Only show on product detail pages
-    if (!window.location.href.includes('/dp/')) {
+    // Show on product detail pages OR review creation pages
+    const isProductPage = window.location.href.includes('/dp/');
+    const isReviewPage = window.location.href.includes('/review/create-review');
+
+    if (!isProductPage && !isReviewPage) {
       return;
     }
 
@@ -953,10 +980,22 @@ Please generate a review with a title.`;
       return;
     }
 
-    // Find the review form area
-    const reviewArea = document.querySelector('#cr-write-review-link') ||
-      document.querySelector('[data-hook="write-review-button"]') ||
-      document.querySelector('#reviewsMedley');
+    // Find the appropriate area to insert the generator
+    let reviewArea;
+
+    if (isReviewPage) {
+      // On review creation page, look for the review form
+      reviewArea = document.querySelector('#cr-review-form') ||
+        document.querySelector('[data-hook="review-form"]') ||
+        document.querySelector('.cr-widget-ReviewForm') ||
+        document.querySelector('#product-review-form') ||
+        document.querySelector('form[action*="review"]');
+    } else {
+      // On product detail page, look for review section
+      reviewArea = document.querySelector('#cr-write-review-link') ||
+        document.querySelector('[data-hook="write-review-button"]') ||
+        document.querySelector('#reviewsMedley');
+    }
 
     if (!reviewArea) {
       setTimeout(createReviewGeneratorUI, 1000);
@@ -1074,9 +1113,21 @@ Please generate a review with a title.`;
       const comments = commentsTextarea.value.trim();
 
       // Get product description
-      const descriptionElement = document.querySelector('#feature-bullets') ||
-        document.querySelector('[data-feature-name="featurebullets"]') ||
-        document.querySelector('#productDescription');
+      let descriptionElement;
+
+      if (window.location.href.includes('/review/create-review')) {
+        // On review page, try to find product info in the page
+        descriptionElement = document.querySelector('.ryp__product-title') ||
+          document.querySelector('[data-hook="product-title"]') ||
+          document.querySelector('.product-title') ||
+          document.querySelector('#productTitle') ||
+          document.querySelector('.a-size-large.product-title-word-break');
+      } else {
+        // On product detail page
+        descriptionElement = document.querySelector('#feature-bullets') ||
+          document.querySelector('[data-feature-name="featurebullets"]') ||
+          document.querySelector('#productDescription');
+      }
 
       if (!descriptionElement) {
         showStatus('Could not find product description on this page', true);
