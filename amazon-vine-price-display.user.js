@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.05
+// @version      1.25.06
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1034,9 +1034,27 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       border-radius: 12px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      position: relative;
     `;
 
     container.innerHTML = `
+      <button id="vine-close-generator" style="
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        background: rgba(255, 255, 255, 0.2);
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 32px;
+        height: 32px;
+        font-size: 20px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s ease;
+      " title="Close">✕</button>
       <h3 style="margin: 0 0 16px 0; color: white; font-size: 18px; font-weight: 600;">
         🤖 AI Review Generator
       </h3>
@@ -1076,30 +1094,59 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           margin-bottom: 12px;
         ">Generate Review</button>
         <div id="vine-review-output" style="display: none;">
-          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
-            Generated Review:
-          </label>
-          <div id="vine-review-result" style="
-            padding: 12px;
-            background: #f9fafb;
-            border: 2px solid #e5e7eb;
-            border-radius: 6px;
-            white-space: pre-wrap;
-            font-size: 14px;
-            line-height: 1.6;
-            margin-bottom: 8px;
-          "></div>
-          <button id="vine-copy-review-btn" style="
-            width: 100%;
-            padding: 10px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-          ">📋 Copy to Clipboard</button>
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
+              Review Title:
+            </label>
+            <div id="vine-review-title" style="
+              padding: 12px;
+              background: #f9fafb;
+              border: 2px solid #e5e7eb;
+              border-radius: 6px;
+              font-size: 16px;
+              font-weight: 600;
+              line-height: 1.4;
+              margin-bottom: 8px;
+            "></div>
+            <button id="vine-copy-title-btn" style="
+              width: 100%;
+              padding: 10px;
+              background: #667eea;
+              color: white;
+              border: none;
+              border-radius: 6px;
+              font-size: 14px;
+              font-weight: 600;
+              cursor: pointer;
+              margin-bottom: 12px;
+            ">📋 Copy Title</button>
+          </div>
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
+              Review Body:
+            </label>
+            <div id="vine-review-body" style="
+              padding: 12px;
+              background: #f9fafb;
+              border: 2px solid #e5e7eb;
+              border-radius: 6px;
+              white-space: pre-wrap;
+              font-size: 14px;
+              line-height: 1.6;
+              margin-bottom: 8px;
+            "></div>
+            <button id="vine-copy-body-btn" style="
+              width: 100%;
+              padding: 10px;
+              background: #667eea;
+              color: white;
+              border: none;
+              border-radius: 6px;
+              font-size: 14px;
+              font-weight: 600;
+              cursor: pointer;
+            ">📋 Copy Review Body</button>
+          </div>
         </div>
         <div id="vine-review-status" style="
           display: none;
@@ -1124,13 +1171,29 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
     }
 
     // Event listeners
+    const closeBtn = document.getElementById('vine-close-generator');
     const generateBtn = document.getElementById('vine-generate-review-btn');
-    const copyBtn = document.getElementById('vine-copy-review-btn');
+    const copyTitleBtn = document.getElementById('vine-copy-title-btn');
+    const copyBodyBtn = document.getElementById('vine-copy-body-btn');
     const starsSelect = document.getElementById('vine-review-stars');
     const commentsTextarea = document.getElementById('vine-review-comments');
     const outputDiv = document.getElementById('vine-review-output');
-    const resultDiv = document.getElementById('vine-review-result');
+    const titleDiv = document.getElementById('vine-review-title');
+    const bodyDiv = document.getElementById('vine-review-body');
     const statusDiv = document.getElementById('vine-review-status');
+
+    // Close button handler
+    closeBtn.addEventListener('click', () => {
+      container.style.display = 'none';
+    });
+
+    // Hover effect for close button
+    closeBtn.addEventListener('mouseover', () => {
+      closeBtn.style.background = 'rgba(255, 255, 255, 0.3)';
+    });
+    closeBtn.addEventListener('mouseout', () => {
+      closeBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+    });
 
     function showStatus(message, isError = false) {
       statusDiv.textContent = message;
@@ -1205,7 +1268,14 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         }
 
         const review = await generateReview(description, stars, comments);
-        resultDiv.textContent = review;
+
+        // Split the review into title and body
+        const lines = review.split('\n');
+        const title = lines[0].trim();
+        const body = lines.slice(1).join('\n').trim();
+
+        titleDiv.textContent = title;
+        bodyDiv.textContent = body;
         outputDiv.style.display = 'block';
         showStatus('Review generated successfully!');
       } catch (error) {
@@ -1216,16 +1286,29 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       }
     });
 
-    copyBtn.addEventListener('click', () => {
-      const text = resultDiv.textContent;
+    copyTitleBtn.addEventListener('click', () => {
+      const text = titleDiv.textContent;
       navigator.clipboard.writeText(text).then(() => {
-        const originalText = copyBtn.textContent;
-        copyBtn.textContent = '✓ Copied!';
+        const originalText = copyTitleBtn.textContent;
+        copyTitleBtn.textContent = '✓ Copied!';
         setTimeout(() => {
-          copyBtn.textContent = originalText;
+          copyTitleBtn.textContent = originalText;
         }, 2000);
       }).catch(err => {
-        showStatus('Failed to copy to clipboard', true);
+        showStatus('Failed to copy title', true);
+      });
+    });
+
+    copyBodyBtn.addEventListener('click', () => {
+      const text = bodyDiv.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const originalText = copyBodyBtn.textContent;
+        copyBodyBtn.textContent = '✓ Copied!';
+        setTimeout(() => {
+          copyBodyBtn.textContent = originalText;
+        }, 2000);
+      }).catch(err => {
+        showStatus('Failed to copy body', true);
       });
     });
   }

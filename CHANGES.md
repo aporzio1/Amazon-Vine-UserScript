@@ -1,5 +1,19 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.25.06 - AI Review Generator Enhancements
+
+### New Features
+
+1. **Universal AI Review Generator**:
+    - Now works on **all** Amazon product pages (`/dp/*`), not just Vine-specific URLs.
+    - Added support for **Review Creation Pages** (`/review/create-review*`). You can now generate reviews directly correctly on the submission form.
+2. **Smart Context & UI Improvements**:
+    - **Context Awareness**: On review pages, the script automatically fetches the product description from the product page using the ASIN, ensuring the AI has full context.
+    - **Split Output**: Generated reviews are now separated into "Review Title" and "Review Body" fields, each with its own "Copy" button for easier pasting.
+    - **Close Button**: Added a close (✕) button to the generator UI.
+3. **Settings Integration**:
+    - Added an **OpenAI API Key** input field directly in the "Vine Tools" settings menu for easier configuration.
+
 ## Version 1.25.03 - Natural Language Improvements
 
 ### Enhancements
