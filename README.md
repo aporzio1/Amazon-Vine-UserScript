@@ -38,6 +38,12 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
   - Show/hide green, yellow, and red items in any combination
   - Filter bar stays visible while scrolling (sticky positioning)
   - Settings persist across sessions
+- **AI Review Generator**: Generate high-quality Amazon Vine reviews using AI
+  - Powered by OpenAI GPT-3.5-turbo
+  - Follows Vine Voice guidelines (unbiased, honest, insightful)
+  - Customizable with star rating and your own comments
+  - One-click copy to clipboard
+  - Appears automatically on product pages
 - **Customizable Price Ranges**: Set custom minimum prices for each color category
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
 - **Cache Indicator**: Shows 📦 icon for cached prices
@@ -50,12 +56,14 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 ## Usage
 
 1. **Color Filter**: Use the checkboxes at the top of the grid to filter items by price range (green/yellow/red)
-2. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
-3. **Saved Searches**: Use the "Saved Searches" tab to add and manage your favorite search terms
-4. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
-5. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
-6. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
-7. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
+2. **AI Review Generator**: On product pages, use the AI generator to create reviews (requires OpenAI API key in settings)
+3. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
+4. **Saved Searches**: Use the "Saved Searches" tab to add and manage your favorite search terms
+5. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
+6. **OpenAI API Key**: Add your API key in "Price Settings" to enable AI review generation
+7. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
+8. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
+9. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
 
 ## How It Works
 

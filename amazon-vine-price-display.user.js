@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.24.01
+// @version      1.25.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -28,6 +28,7 @@
     AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     COLOR_FILTER_KEY: 'vine_color_filter',
+    OPENAI_API_KEY: 'vine_openai_api_key',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 50000, // Optimized for high capacity
     MAX_RETRIES: 3,
@@ -878,6 +879,241 @@
     });
   }
 
+  // AI Review Generator
+  async function generateReview(productDescription, starRating, userComments) {
+    const apiKey = getStorage(CONFIG.OPENAI_API_KEY, '');
+
+    if (!apiKey) {
+      throw new Error('OpenAI API key not configured. Please add your API key in Vine Tools > Price Settings.');
+    }
+
+    const sentiment = starRating >= 4 ? 'positive' : starRating >= 3 ? 'neutral' : 'negative';
+
+    const systemPrompt = `You are a helpful assistant that creates Top Tier Amazon Vine reviews. Follow these guidelines:
+
+Be unbiased: Whether positive, neutral, or negative, your review is about the experience with the product and what you liked and didn't like about it. Your reviews are independent opinions.
+
+Be honest: Write in a natural voice that comes through as genuine. This is what customers trust from Vine Voices - a solid honest review from another customer.
+
+Be insightful yet specific: Reviews are about the product. Avoid vague, general, and repetitive comments. Share context that may help customers better assess the product and your experience with it, like information about your familiarity with the product type, how you used the product, and how long you used the product.
+
+Check your review for basic grammar and sentence structure.
+
+Format: Include a title on the first line, then the review body. 2 paragraphs or less. Do NOT mention the star rating number.`;
+
+    const userPrompt = `Product Description: ${productDescription}
+
+User's Additional Comments: ${userComments || 'None provided'}
+
+Sentiment: This should be a ${sentiment} review.
+
+Please generate a review with a title.`;
+
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 500
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || 'API request failed');
+      }
+
+      const data = await response.json();
+      return data.choices[0].message.content.trim();
+    } catch (error) {
+      console.error('Error generating review:', error);
+      throw error;
+    }
+  }
+
+  function createReviewGeneratorUI() {
+    // Only show on product detail pages
+    if (!window.location.href.includes('/dp/')) {
+      return;
+    }
+
+    // Check if already exists
+    if (document.getElementById('vine-review-generator')) {
+      return;
+    }
+
+    // Find the review form area
+    const reviewArea = document.querySelector('#cr-write-review-link') ||
+      document.querySelector('[data-hook="write-review-button"]') ||
+      document.querySelector('#reviewsMedley');
+
+    if (!reviewArea) {
+      setTimeout(createReviewGeneratorUI, 1000);
+      return;
+    }
+
+    const container = document.createElement('div');
+    container.id = 'vine-review-generator';
+    container.style.cssText = `
+      margin: 20px 0;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    `;
+
+    container.innerHTML = `
+      <h3 style="margin: 0 0 16px 0; color: white; font-size: 18px; font-weight: 600;">
+        🤖 AI Review Generator
+      </h3>
+      <div style="background: white; padding: 16px; border-radius: 8px;">
+        <div style="margin-bottom: 12px;">
+          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
+            Star Rating:
+          </label>
+          <select id="vine-review-stars" style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
+            <option value="5">⭐⭐⭐⭐⭐ (5 stars)</option>
+            <option value="4">⭐⭐⭐⭐ (4 stars)</option>
+            <option value="3">⭐⭐⭐ (3 stars)</option>
+            <option value="2">⭐⭐ (2 stars)</option>
+            <option value="1">⭐ (1 star)</option>
+          </select>
+        </div>
+        <div style="margin-bottom: 12px;">
+          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
+            Your Comments (optional):
+          </label>
+          <textarea id="vine-review-comments" placeholder="Add any specific points you want to mention..." 
+            style="width: 100%; min-height: 80px; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px; font-family: inherit; resize: vertical;"></textarea>
+          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+            e.g., "Used it for 2 weeks", "Great battery life", "Too heavy for daily use"
+          </div>
+        </div>
+        <button id="vine-generate-review-btn" style="
+          width: 100%;
+          padding: 12px;
+          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+          color: white;
+          border: none;
+          border-radius: 8px;
+          font-size: 16px;
+          font-weight: 600;
+          cursor: pointer;
+          margin-bottom: 12px;
+        ">Generate Review</button>
+        <div id="vine-review-output" style="display: none;">
+          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
+            Generated Review:
+          </label>
+          <div id="vine-review-result" style="
+            padding: 12px;
+            background: #f9fafb;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 8px;
+          "></div>
+          <button id="vine-copy-review-btn" style="
+            width: 100%;
+            padding: 10px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+          ">📋 Copy to Clipboard</button>
+        </div>
+        <div id="vine-review-status" style="
+          display: none;
+          padding: 12px;
+          border-radius: 6px;
+          margin-top: 12px;
+          font-size: 14px;
+        "></div>
+      </div>
+    `;
+
+    reviewArea.parentNode.insertBefore(container, reviewArea);
+
+    // Event listeners
+    const generateBtn = document.getElementById('vine-generate-review-btn');
+    const copyBtn = document.getElementById('vine-copy-review-btn');
+    const starsSelect = document.getElementById('vine-review-stars');
+    const commentsTextarea = document.getElementById('vine-review-comments');
+    const outputDiv = document.getElementById('vine-review-output');
+    const resultDiv = document.getElementById('vine-review-result');
+    const statusDiv = document.getElementById('vine-review-status');
+
+    function showStatus(message, isError = false) {
+      statusDiv.textContent = message;
+      statusDiv.style.display = 'block';
+      statusDiv.style.background = isError ? '#fee2e2' : '#d1fae5';
+      statusDiv.style.color = isError ? '#991b1b' : '#065f46';
+      setTimeout(() => {
+        statusDiv.style.display = 'none';
+      }, 5000);
+    }
+
+    generateBtn.addEventListener('click', async () => {
+      const stars = parseInt(starsSelect.value);
+      const comments = commentsTextarea.value.trim();
+
+      // Get product description
+      const descriptionElement = document.querySelector('#feature-bullets') ||
+        document.querySelector('[data-feature-name="featurebullets"]') ||
+        document.querySelector('#productDescription');
+
+      if (!descriptionElement) {
+        showStatus('Could not find product description on this page', true);
+        return;
+      }
+
+      const description = descriptionElement.textContent.trim().substring(0, 1000);
+
+      generateBtn.disabled = true;
+      generateBtn.textContent = 'Generating...';
+      outputDiv.style.display = 'none';
+
+      try {
+        const review = await generateReview(description, stars, comments);
+        resultDiv.textContent = review;
+        outputDiv.style.display = 'block';
+        showStatus('Review generated successfully!');
+      } catch (error) {
+        showStatus(error.message, true);
+      } finally {
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Review';
+      }
+    });
+
+    copyBtn.addEventListener('click', () => {
+      const text = resultDiv.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const originalText = copyBtn.textContent;
+        copyBtn.textContent = '✓ Copied!';
+        setTimeout(() => {
+          copyBtn.textContent = originalText;
+        }, 2000);
+      }).catch(err => {
+        showStatus('Failed to copy to clipboard', true);
+      });
+    });
+  }
+
   // Settings UI
   function createSettingsUI() {
     function findHeaderContainer() {
@@ -1079,6 +1315,19 @@
           </div>
         </div>
 
+        <div style="margin-bottom: 24px; padding-top: 24px; border-top: 2px solid #e5e7eb;">
+          <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">AI Review Generator</label>
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; margin-bottom: 4px; color: #6b7280;">OpenAI API Key (optional):</label>
+            <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}" 
+              placeholder="sk-..." 
+              style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">
+              Required for AI review generation. Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: #667eea;">platform.openai.com</a>
+            </div>
+          </div>
+        </div>
+
         <div style="margin-bottom: 24px;">
           <button id="vine-save-btn" style="
             width: 100%;
@@ -1156,6 +1405,7 @@
       const redMaxInput = dialog.querySelector('#vine-red-max');
       const hideCachedCheckbox = dialog.querySelector('#vine-hide-cached');
       const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
+      const openaiKeyInput = dialog.querySelector('#vine-openai-key');
 
       function showStatus(message, isError = false) {
         statusDiv.textContent = message;
@@ -1196,6 +1446,7 @@
         setStorage(CONFIG.THRESHOLDS_KEY, newThresholds);
         setStorage(CONFIG.HIDE_CACHED_KEY, hideCachedCheckbox.checked);
         setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
+        setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
 
         cachedThresholds = newThresholds;
         hideCached = hideCachedCheckbox.checked;
@@ -1545,6 +1796,7 @@
     observePageChanges();
     createSettingsUI();
     createColorFilterUI();
+    createReviewGeneratorUI();
     console.log('Amazon Vine Price Display userscript loaded');
   }
 

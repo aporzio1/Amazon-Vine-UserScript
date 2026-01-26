@@ -1,5 +1,77 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.25.00 - AI Review Generator
+
+### New Features Added
+
+1. **AI-Powered Review Generator**:
+   - Automatically generates Amazon Vine reviews using OpenAI's GPT-3.5
+   - Appears on product detail pages (when viewing /dp/ URLs)
+   - Beautiful gradient UI matching the Vine Tools theme
+   - Follows Amazon Vine Voice guidelines for quality reviews
+
+2. **Review Customization**:
+   - **Star Rating Selector**: Choose 1-5 stars for your review sentiment
+   - **Comments Field**: Add specific points you want mentioned (e.g., "Used for 2 weeks", "Great battery life")
+   - **Product Description**: Automatically extracts product details from the page
+   - **Copy to Clipboard**: One-click copy of generated review
+
+3. **OpenAI Integration**:
+   - Configure your OpenAI API key in Vine Tools > Price Settings
+   - Uses GPT-3.5-turbo model for cost-effective generation
+   - Secure API key storage (stored locally, never shared)
+   - Clear error messages if API key is missing or invalid
+
+4. **Review Quality**:
+   - Follows Vine Voice guidelines: unbiased, honest, insightful
+   - Generates title + 2 paragraphs or less
+   - Natural writing voice that sounds genuine
+   - Avoids mentioning star rating numbers
+   - Proper grammar and sentence structure
+
+### Technical Changes
+
+1. **Version**: Updated from 1.24.01 to 1.25.00
+
+2. **New Storage Key**: `OPENAI_API_KEY: 'vine_openai_api_key'`
+   - Stores user's OpenAI API key securely
+
+3. **New Functions**:
+   - `generateReview(productDescription, starRating, userComments)`: Calls OpenAI API to generate review
+   - `createReviewGeneratorUI()`: Creates the review generator interface on product pages
+
+4. **API Integration**:
+   - Uses OpenAI Chat Completions API
+   - Model: gpt-3.5-turbo
+   - Temperature: 0.7 for natural variation
+   - Max tokens: 500 for concise reviews
+
+5. **UI Components**:
+   - Star rating dropdown (1-5 stars with emoji)
+   - Comments textarea with placeholder examples
+   - Generate button with loading state
+   - Review output area with copy button
+   - Status messages for success/error feedback
+
+### Files Modified
+
+- `amazon-vine-price-display.user.js` (main userscript)
+
+### Usage
+
+1. Navigate to any Amazon product page (/dp/ URL)
+2. Scroll to find the "🤖 AI Review Generator" section
+3. First time: Add your OpenAI API key in Vine Tools > Price Settings
+4. Select your star rating (1-5 stars)
+5. Optionally add specific comments you want included
+6. Click "Generate Review"
+7. Copy the generated review to your clipboard
+8. Paste into Amazon's review form
+
+**Note**: This feature requires an OpenAI API key. Get yours at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). GPT-3.5-turbo is very affordable for occasional use.
+
+---
+
 ## Version 1.24.01 - Filter UI Improvements
 
 ### UI Enhancements
