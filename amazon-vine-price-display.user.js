@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.03
+// @version      1.25.04
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -982,25 +982,49 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
     // Find the appropriate area to insert the generator
     let reviewArea;
+    let insertPosition = 'before'; // 'before' or 'prepend'
 
     if (isReviewPage) {
-      // On review creation page, look for the review form
-      reviewArea = document.querySelector('#cr-review-form') ||
+      // On review creation page, try multiple selectors
+      reviewArea = document.querySelector('form[name="ryp__review-form"]') ||
+        document.querySelector('#ryp-review-form') ||
         document.querySelector('[data-hook="review-form"]') ||
         document.querySelector('.cr-widget-ReviewForm') ||
         document.querySelector('#product-review-form') ||
-        document.querySelector('form[action*="review"]');
+        document.querySelector('form[action*="review"]') ||
+        document.querySelector('.a-section.review-form') ||
+        document.querySelector('#cm-cr-review-form') ||
+        document.querySelector('textarea[name="review"]')?.closest('form') ||
+        document.querySelector('body'); // Fallback to body
+
+      // If we found a form or specific element, prepend to it
+      if (reviewArea && reviewArea.tagName !== 'BODY') {
+        insertPosition = 'before';
+      } else {
+        // If using body, prepend to it
+        insertPosition = 'prepend';
+      }
     } else {
       // On product detail page, look for review section
       reviewArea = document.querySelector('#cr-write-review-link') ||
         document.querySelector('[data-hook="write-review-button"]') ||
-        document.querySelector('#reviewsMedley');
+        document.querySelector('#reviewsMedley') ||
+        document.querySelector('body'); // Fallback
+      insertPosition = 'before';
     }
 
     if (!reviewArea) {
+      // Retry after a delay
+      console.log('[Vine Tools] Review generator: waiting for page elements...');
       setTimeout(createReviewGeneratorUI, 1000);
       return;
     }
+
+    console.log('[Vine Tools] Review generator: inserting UI', {
+      isReviewPage,
+      element: reviewArea.tagName,
+      insertPosition
+    });
 
     const container = document.createElement('div');
     container.id = 'vine-review-generator';
@@ -1087,7 +1111,17 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       </div>
     `;
 
-    reviewArea.parentNode.insertBefore(container, reviewArea);
+    // Insert the container based on position
+    if (insertPosition === 'prepend' && reviewArea.tagName === 'BODY') {
+      // Prepend to body
+      reviewArea.insertBefore(container, reviewArea.firstChild);
+    } else if (reviewArea.parentNode) {
+      // Insert before the target element
+      reviewArea.parentNode.insertBefore(container, reviewArea);
+    } else {
+      // Fallback: append to body
+      document.body.appendChild(container);
+    }
 
     // Event listeners
     const generateBtn = document.getElementById('vine-generate-review-btn');
