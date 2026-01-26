@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.06
+// @version      1.25.07
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2000,7 +2000,9 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       observePageChanges();
       createSettingsUI();
-      createColorFilterUI();
+      if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
+        createColorFilterUI();
+      }
     }
 
     // Always run review generator on product pages (works on all Amazon product pages)

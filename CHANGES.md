@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.25.07 - Minor UI Improvements
+
+### Fixes
+
+- **Color Filter Visibility**: Restricted the Green/Yellow/Red price filter checkboxes to only appear on Vine browsing pages (`/vine/vine-items`), preventing them from cluttering other pages like Orders or Account.
+
 ## Version 1.25.06 - AI Review Generator Enhancements
 
 ### New Features
