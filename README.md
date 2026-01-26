@@ -34,6 +34,10 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
   - 🟢 Green: High value items (default: $90+)
   - 🟡 Yellow: Medium value items (default: $50-$89.99)
   - 🔴 Red: Lower value items (below $50)
+- **Color Filter**: Filter items by price range with convenient checkboxes at the top of the grid
+  - Show/hide green, yellow, and red items in any combination
+  - Filter bar stays visible while scrolling
+  - Settings persist across sessions
 - **Customizable Price Ranges**: Set custom minimum prices for each color category
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
 - **Cache Indicator**: Shows 📦 icon for cached prices
@@ -45,12 +49,13 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 
 ## Usage
 
-1. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
-2. **Saved Searches**: Use the "Saved Searches" tab to add and manage your favorite search terms
-3. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
-4. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
-5. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
-6. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
+1. **Color Filter**: Use the checkboxes at the top of the grid to filter items by price range (green/yellow/red)
+2. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
+3. **Saved Searches**: Use the "Saved Searches" tab to add and manage your favorite search terms
+4. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
+5. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
+6. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
+7. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
 
 ## How It Works
 

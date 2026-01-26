@@ -1,5 +1,64 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.24 - Color Filter Feature
+
+### New Features Added
+
+1. **Color Filter Bar**:
+   - Prominent filter bar displayed at the top of the grid view
+   - Three checkboxes for filtering items by price color:
+     - 🟢 Green ($90+)
+     - 🟡 Yellow ($50-89)
+     - 🔴 Red (<$50)
+   - Checkboxes can be selected in any combination
+   - Sticky positioning keeps filter visible while scrolling
+   - Beautiful gradient design matching the Vine Tools theme
+
+2. **Real-time Filtering**:
+   - Instantly shows/hides items based on selected filters
+   - Works seamlessly with existing "Hide cached items" feature
+   - Filter state persists across page reloads and sessions
+
+### Technical Changes
+
+1. **Version**: Updated from 1.23 to 1.24
+
+2. **New Storage Key**: `COLOR_FILTER_KEY: 'vine_color_filter'`
+   - Stores object: `{ green: boolean, yellow: boolean, red: boolean }`
+   - Default: all colors enabled
+
+3. **New Functions**:
+   - `getColorFilter(callback)`: Retrieves color filter settings with caching
+   - `applyColorFilter(item, color)`: Applies filter to individual item
+   - `createColorFilterUI()`: Creates and inserts the filter bar UI
+   - `applyColorFilterToAllItems()`: Applies filter to all processed items
+
+4. **Enhanced Badge System**:
+   - Added `data-price-color` attribute to price badges
+   - Enables efficient filtering by color category
+   - Added `data-vine-color-filtered` attribute to track filter state
+
+5. **UI Design**:
+   - Gradient purple background matching Vine Tools
+   - Hover effects on checkbox labels
+   - Responsive layout with flexbox
+   - Smooth transitions
+
+### Files Modified
+
+- `amazon-vine-price-display.user.js` (main userscript)
+
+### Usage
+
+1. Navigate to any Amazon Vine items page
+2. The color filter bar appears automatically at the top of the grid
+3. Check/uncheck color boxes to show/hide items by price range
+4. Filter settings are saved automatically
+
+This feature allows Vine reviewers to quickly focus on items in their preferred price ranges without scrolling through unwanted items.
+
+---
+
 ## Version 1.21 - Auto-Advance Feature
 
 ### New Features Added

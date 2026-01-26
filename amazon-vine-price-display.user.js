@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.23.00
+// @version      1.24.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -27,6 +27,7 @@
     HIDE_CACHED_KEY: 'vine_hide_cached',
     AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
+    COLOR_FILTER_KEY: 'vine_color_filter',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 50000, // Optimized for high capacity
     MAX_RETRIES: 3,
@@ -108,6 +109,8 @@
   let hideCachedLoaded = false;
   let autoAdvance = false;
   let autoAdvanceLoaded = false;
+  let colorFilter = { green: true, yellow: true, red: true };
+  let colorFilterLoaded = false;
 
   // Cache optimization
   const pendingCacheUpdates = new Map();
@@ -141,6 +144,16 @@
     autoAdvanceLoaded = true;
     autoAdvance = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
     callback(autoAdvance);
+  }
+
+  function getColorFilter(callback) {
+    if (colorFilterLoaded) {
+      callback(colorFilter);
+      return;
+    }
+    colorFilterLoaded = true;
+    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true });
+    callback(colorFilter);
   }
 
   function getThresholds(callback) {
@@ -410,6 +423,7 @@
     badge.className = `vine-price-badge vine-price-${color}`;
     badge.setAttribute('aria-label', `Product price: $${price.toFixed(2)}`);
     badge.setAttribute('role', 'status');
+    badge.setAttribute('data-price-color', color);
 
     const priceText = document.createElement('span');
     priceText.className = 'vine-price-text';
@@ -425,6 +439,22 @@
     }
 
     return badge;
+  }
+
+  // Apply color filter to an item
+  function applyColorFilter(item, color) {
+    getColorFilter((filter) => {
+      if (!filter[color]) {
+        item.style.display = 'none';
+        item.dataset.vineColorFiltered = 'true';
+      } else {
+        // Only show if not hidden by cache filter
+        if (item.dataset.vineCachedHidden !== 'true') {
+          item.style.display = '';
+        }
+        item.dataset.vineColorFiltered = 'false';
+      }
+    });
   }
 
   // Processing
@@ -463,6 +493,7 @@
         const color = getPriceColorSync(cached.price);
         const badge = createPriceBadge(cached.price, true, color);
         item.appendChild(badge);
+        applyColorFilter(item, color);
       });
     } else {
       const fetchId = `${asin}-${Date.now()}`;
@@ -475,6 +506,7 @@
             const color = getPriceColorSync(priceData.price);
             const badge = createPriceBadge(priceData.price, false, color);
             item.appendChild(badge);
+            applyColorFilter(item, color);
           }
         }
       });
@@ -522,6 +554,7 @@
             const color = getPriceColorSync(cached.price);
             const badge = createPriceBadge(cached.price, true, color);
             item.appendChild(badge);
+            applyColorFilter(item, color);
           } else {
             uncachedItems.push({ item, asin, url });
           }
@@ -538,6 +571,7 @@
                 const color = getPriceColorSync(priceData.price);
                 const badge = createPriceBadge(priceData.price, false, color);
                 item.appendChild(badge);
+                applyColorFilter(item, color);
               }
             }
           });
@@ -693,6 +727,143 @@
     mutationObserver.observe(document.body, {
       childList: true,
       subtree: true
+    });
+  }
+
+  // Color Filter UI
+  function createColorFilterUI() {
+    // Check if filter already exists
+    if (document.getElementById('vine-color-filter')) {
+      return;
+    }
+
+    // Find the main content area where items are displayed
+    const contentArea = document.querySelector('.vvp-items-grid') ||
+      document.querySelector('.vvp-body') ||
+      document.querySelector('#vvp-items-grid');
+
+    if (!contentArea) {
+      // Retry later if content area not found yet
+      setTimeout(createColorFilterUI, 500);
+      return;
+    }
+
+    const filterContainer = document.createElement('div');
+    filterContainer.id = 'vine-color-filter';
+    filterContainer.style.cssText = `
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 12px 20px;
+      margin-bottom: 16px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    `;
+
+    const label = document.createElement('span');
+    label.style.cssText = `
+      font-weight: 600;
+      font-size: 14px;
+      color: white;
+      margin-right: 8px;
+    `;
+    label.textContent = 'Filter by Price:';
+    filterContainer.appendChild(label);
+
+    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true });
+
+    // Create checkboxes for each color
+    const colors = [
+      { name: 'green', label: '🟢 Green ($90+)', color: '#10b981' },
+      { name: 'yellow', label: '🟡 Yellow ($50-89)', color: '#fbbf24' },
+      { name: 'red', label: '🔴 Red (<$50)', color: '#ef4444' }
+    ];
+
+    colors.forEach(({ name, label: colorLabel, color }) => {
+      const checkboxWrapper = document.createElement('label');
+      checkboxWrapper.style.cssText = `
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        background: rgba(255, 255, 255, 0.2);
+        padding: 8px 12px;
+        border-radius: 6px;
+        transition: background 0.2s ease;
+        user-select: none;
+      `;
+      checkboxWrapper.onmouseover = () => {
+        checkboxWrapper.style.background = 'rgba(255, 255, 255, 0.3)';
+      };
+      checkboxWrapper.onmouseout = () => {
+        checkboxWrapper.style.background = 'rgba(255, 255, 255, 0.2)';
+      };
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.id = `vine-filter-${name}`;
+      checkbox.checked = currentFilter[name];
+      checkbox.style.cssText = `
+        margin-right: 8px;
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+      `;
+
+      const labelText = document.createElement('span');
+      labelText.style.cssText = `
+        font-size: 14px;
+        font-weight: 500;
+        color: white;
+      `;
+      labelText.textContent = colorLabel;
+
+      checkbox.addEventListener('change', (e) => {
+        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true });
+        newFilter[name] = e.target.checked;
+        setStorage(CONFIG.COLOR_FILTER_KEY, newFilter);
+        colorFilter = newFilter;
+        colorFilterLoaded = true;
+
+        // Apply filter to all items on the page
+        applyColorFilterToAllItems();
+      });
+
+      checkboxWrapper.appendChild(checkbox);
+      checkboxWrapper.appendChild(labelText);
+      filterContainer.appendChild(checkboxWrapper);
+    });
+
+    // Insert the filter at the top of the content area
+    contentArea.insertBefore(filterContainer, contentArea.firstChild);
+  }
+
+  // Apply color filter to all items on the page
+  function applyColorFilterToAllItems() {
+    getColorFilter((filter) => {
+      const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
+      allItems.forEach(item => {
+        const badge = item.querySelector('.vine-price-badge');
+        if (badge) {
+          const color = badge.getAttribute('data-price-color');
+          if (color) {
+            if (!filter[color]) {
+              item.style.display = 'none';
+              item.dataset.vineColorFiltered = 'true';
+            } else {
+              // Only show if not hidden by cache filter
+              if (item.dataset.vineCachedHidden !== 'true') {
+                item.style.display = '';
+              }
+              item.dataset.vineColorFiltered = 'false';
+            }
+          }
+        }
+      });
     });
   }
 
@@ -1348,6 +1519,7 @@
   function init() {
     getThresholds(() => { });
     getHideCached(() => { });
+    getColorFilter(() => { });
     processVineItems(true);
 
     setTimeout(() => {
@@ -1361,6 +1533,7 @@
 
     observePageChanges();
     createSettingsUI();
+    createColorFilterUI();
     console.log('Amazon Vine Price Display userscript loaded');
   }
 
