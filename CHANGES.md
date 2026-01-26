@@ -1,5 +1,35 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.24.01 - Filter UI Improvements
+
+### UI Enhancements
+
+1. **Right-Aligned Filter**:
+   - Filter bar now appears on the right side of the page instead of spanning full width
+   - More compact and unobtrusive design
+   - Better visual hierarchy
+
+2. **Compact Box Design**:
+   - Filter container now only wraps around the content (label + checkboxes)
+   - Changed from full-width to inline-flex layout
+   - Cleaner, more polished appearance
+
+### Technical Changes
+
+1. **Version**: Updated from 1.24.00 to 1.24.01
+
+2. **UI Structure**:
+   - Added wrapper div for right alignment (`vine-color-filter-wrapper`)
+   - Changed filter container from `display: flex` to `display: inline-flex`
+   - Moved sticky positioning to wrapper for better control
+
+### Files Modified
+
+- `amazon-vine-price-display.user.js` (main userscript)
+- `README.md` (updated feature description)
+
+---
+
 ## Version 1.24 - Color Filter Feature
 
 ### New Features Added

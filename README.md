@@ -34,9 +34,9 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
   - 🟢 Green: High value items (default: $90+)
   - 🟡 Yellow: Medium value items (default: $50-$89.99)
   - 🔴 Red: Lower value items (below $50)
-- **Color Filter**: Filter items by price range with convenient checkboxes at the top of the grid
+- **Color Filter**: Filter items by price range with convenient checkboxes (right-aligned, compact design)
   - Show/hide green, yellow, and red items in any combination
-  - Filter bar stays visible while scrolling
+  - Filter bar stays visible while scrolling (sticky positioning)
   - Settings persist across sessions
 - **Customizable Price Ranges**: Set custom minimum prices for each color category
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
