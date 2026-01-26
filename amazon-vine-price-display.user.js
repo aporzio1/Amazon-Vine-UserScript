@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.04
+// @version      1.25.05
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1146,35 +1146,64 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       const stars = parseInt(starsSelect.value);
       const comments = commentsTextarea.value.trim();
 
-      // Get product description
-      let descriptionElement;
-
-      if (window.location.href.includes('/review/create-review')) {
-        // On review page, try to find product info in the page
-        descriptionElement = document.querySelector('.ryp__product-title') ||
-          document.querySelector('[data-hook="product-title"]') ||
-          document.querySelector('.product-title') ||
-          document.querySelector('#productTitle') ||
-          document.querySelector('.a-size-large.product-title-word-break');
-      } else {
-        // On product detail page
-        descriptionElement = document.querySelector('#feature-bullets') ||
-          document.querySelector('[data-feature-name="featurebullets"]') ||
-          document.querySelector('#productDescription');
-      }
-
-      if (!descriptionElement) {
-        showStatus('Could not find product description on this page', true);
-        return;
-      }
-
-      const description = descriptionElement.textContent.trim().substring(0, 1000);
-
       generateBtn.disabled = true;
       generateBtn.textContent = 'Generating...';
       outputDiv.style.display = 'none';
 
       try {
+        let description = '';
+
+        if (window.location.href.includes('/review/create-review')) {
+          // On review page, extract ASIN from URL and fetch product page
+          const urlParams = new URLSearchParams(window.location.search);
+          const asin = urlParams.get('asin');
+
+          if (!asin) {
+            showStatus('Could not find product ASIN in URL', true);
+            return;
+          }
+
+          showStatus('Fetching product details...');
+
+          // Fetch the product page
+          const productUrl = `https://www.amazon.com/dp/${asin}`;
+
+          try {
+            const response = await fetch(productUrl);
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            // Extract description from the fetched page
+            const descElement = doc.querySelector('#feature-bullets') ||
+              doc.querySelector('[data-feature-name="featurebullets"]') ||
+              doc.querySelector('#productDescription') ||
+              doc.querySelector('#productTitle');
+
+            if (descElement) {
+              description = descElement.textContent.trim().substring(0, 1000);
+            } else {
+              showStatus('Could not extract product description from product page', true);
+              return;
+            }
+          } catch (fetchError) {
+            showStatus('Failed to fetch product details: ' + fetchError.message, true);
+            return;
+          }
+        } else {
+          // On product detail page, get description directly
+          const descriptionElement = document.querySelector('#feature-bullets') ||
+            document.querySelector('[data-feature-name="featurebullets"]') ||
+            document.querySelector('#productDescription');
+
+          if (!descriptionElement) {
+            showStatus('Could not find product description on this page', true);
+            return;
+          }
+
+          description = descriptionElement.textContent.trim().substring(0, 1000);
+        }
+
         const review = await generateReview(description, stars, comments);
         resultDiv.textContent = review;
         outputDiv.style.display = 'block';
