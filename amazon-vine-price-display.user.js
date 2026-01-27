@@ -2024,6 +2024,50 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
     }
   `);
 
+  // Keyboard navigation
+  function setupKeyboardNavigation() {
+    document.addEventListener('keydown', (e) => {
+      // Don't trigger if user is typing in an input field
+      const activeElement = document.activeElement;
+      const isTyping = activeElement && (
+        activeElement.tagName === 'INPUT' ||
+        activeElement.tagName === 'TEXTAREA' ||
+        activeElement.isContentEditable
+      );
+
+      if (isTyping) {
+        return;
+      }
+
+      // Right Arrow = Next Page
+      if (e.key === 'ArrowRight') {
+        const nextButton = document.querySelector('li.a-last a') ||
+          document.querySelector('.a-pagination .a-last a') ||
+          document.querySelector('a[aria-label="Next page"]') ||
+          document.querySelector('.a-pagination li:last-child:not(.a-disabled) a');
+
+        if (nextButton && !nextButton.parentElement.classList.contains('a-disabled')) {
+          e.preventDefault();
+          nextButton.click();
+        }
+      }
+
+      // Left Arrow = Previous Page
+      if (e.key === 'ArrowLeft') {
+        const prevButton = document.querySelector('li.a-first a') ||
+          document.querySelector('.a-pagination .a-first a') ||
+          document.querySelector('a[aria-label="Previous page"]') ||
+          document.querySelector('.a-pagination li:first-child:not(.a-disabled) a');
+
+        // Make sure we're not on the first page
+        if (prevButton && !prevButton.parentElement.classList.contains('a-disabled')) {
+          e.preventDefault();
+          prevButton.click();
+        }
+      }
+    });
+  }
+
   // Initialize
   function init() {
     // Check if we're on a Vine page
@@ -2055,6 +2099,9 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
     // Always run review generator on product pages (works on all Amazon product pages)
     createReviewGeneratorUI();
+
+    // Add keyboard navigation for pagination
+    setupKeyboardNavigation();
 
     console.log('Amazon Vine Price Display userscript loaded');
   }
