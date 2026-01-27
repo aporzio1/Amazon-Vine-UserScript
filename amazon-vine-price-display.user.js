@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.26.01
+// @version      1.26.02
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -120,6 +120,7 @@
   // Cache optimization
   const pendingCacheUpdates = new Map();
   let cacheUpdateTimeout = null;
+  let autoAdvanceCheckTimeout = null;
   let memoryCache = null; // In-memory cache to avoid repeated storage reads
   let cacheLoaded = false;
   let lastCleanupTime = 0;
@@ -464,6 +465,9 @@
           item.style.display = '';
           item.dataset.vineHidden = 'false';
         }
+
+        // Trigger auto-advance check whenever/if visibility changes
+        checkAndAutoAdvance();
       });
     });
   }
@@ -586,15 +590,18 @@
     });
   }
 
-  // Check if all items are hidden and auto-advance to next page
+  // Check if all items are hidden and auto-advance to next page (Debounced)
   function checkAndAutoAdvance() {
-    getAutoAdvance((shouldAutoAdvance) => {
-      if (!shouldAutoAdvance) {
-        return;
-      }
+    if (autoAdvanceCheckTimeout) {
+      clearTimeout(autoAdvanceCheckTimeout);
+    }
 
-      // Wait a bit to ensure all items have been processed
-      setTimeout(() => {
+    autoAdvanceCheckTimeout = setTimeout(() => {
+      getAutoAdvance((shouldAutoAdvance) => {
+        if (!shouldAutoAdvance) {
+          return;
+        }
+
         const selectors = [
           '.vvp-item-tile',
           '[data-recommendation-id]',
@@ -633,8 +640,8 @@
             console.log('All items hidden but no next page available');
           }
         }
-      }, 1000); // Wait 1 second to ensure all items are processed
-    });
+      });
+    }, 1000); // Wait 1 second after last update
   }
 
   function processVineItems(isInitialLoad = false) {
