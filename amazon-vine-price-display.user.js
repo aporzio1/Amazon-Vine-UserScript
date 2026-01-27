@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.25.08
+// @version      1.26.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -114,7 +114,7 @@
   let hideCachedLoaded = false;
   let autoAdvance = false;
   let autoAdvanceLoaded = false;
-  let colorFilter = { green: true, yellow: true, red: true };
+  let colorFilter = { green: true, yellow: true, red: true, purple: true };
   let colorFilterLoaded = false;
 
   // Cache optimization
@@ -157,7 +157,7 @@
       return;
     }
     colorFilterLoaded = true;
-    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true });
+    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
     callback(colorFilter);
   }
 
@@ -340,7 +340,7 @@
         const priceMatch = priceText.match(/\$?([\d,]+\.?\d*)/);
         if (priceMatch) {
           const price = parseFloat(priceMatch[1].replace(/,/g, ''));
-          if (!isNaN(price) && price > 0) {
+          if (!isNaN(price) && price >= 0) {
             return price;
           }
         }
@@ -414,7 +414,9 @@
       setStorage(CONFIG.THRESHOLDS_KEY, thresholds);
     }
 
-    if (price >= thresholds.GREEN_MIN) {
+    if (price === 0) {
+      return 'purple';
+    } else if (price >= thresholds.GREEN_MIN) {
       return 'green';
     } else if (price >= thresholds.YELLOW_MIN) {
       return 'yellow';
@@ -591,54 +593,47 @@
         return;
       }
 
-      getHideCached((shouldHide) => {
-        if (!shouldHide) {
+      // Wait a bit to ensure all items have been processed
+      setTimeout(() => {
+        const selectors = [
+          '.vvp-item-tile',
+          '[data-recommendation-id]',
+          '.a-section.a-spacing-base'
+        ];
+
+        let allItems = [];
+        for (const selector of selectors) {
+          const found = document.querySelectorAll(selector);
+          if (found.length > 0) {
+            allItems = Array.from(found);
+            break;
+          }
+        }
+
+        if (allItems.length === 0) {
           return;
         }
 
-        // Wait a bit to ensure all items have been processed
-        setTimeout(() => {
-          const selectors = [
-            '.vvp-item-tile',
-            '[data-recommendation-id]',
-            '.a-section.a-spacing-base'
-          ];
+        // Check if all items are hidden (by any filter)
+        const allHidden = allItems.every(item => {
+          return getComputedStyle(item).display === 'none';
+        });
 
-          let allItems = [];
-          for (const selector of selectors) {
-            const found = document.querySelectorAll(selector);
-            if (found.length > 0) {
-              allItems = Array.from(found);
-              break;
-            }
+        if (allHidden) {
+          // Find the next page button and click it
+          const nextButton = document.querySelector('li.a-last a') ||
+            document.querySelector('.a-pagination .a-last a') ||
+            document.querySelector('a[aria-label="Next page"]') ||
+            document.querySelector('.a-pagination li:last-child:not(.a-disabled) a');
+
+          if (nextButton && !nextButton.parentElement.classList.contains('a-disabled')) {
+            console.log('All items hidden, auto-advancing to next page...');
+            nextButton.click();
+          } else {
+            console.log('All items hidden but no next page available');
           }
-
-          if (allItems.length === 0) {
-            return;
-          }
-
-          // Check if all items are hidden
-          const allHidden = allItems.every(item => {
-            return item.dataset.vineCachedHidden === 'true' ||
-              getComputedStyle(item).display === 'none';
-          });
-
-          if (allHidden) {
-            // Find the next page button and click it
-            const nextButton = document.querySelector('li.a-last a') ||
-              document.querySelector('.a-pagination .a-last a') ||
-              document.querySelector('a[aria-label="Next page"]') ||
-              document.querySelector('.a-pagination li:last-child:not(.a-disabled) a');
-
-            if (nextButton && !nextButton.parentElement.classList.contains('a-disabled')) {
-              console.log('All items hidden, auto-advancing to next page...');
-              nextButton.click();
-            } else {
-              console.log('All items hidden but no next page available');
-            }
-          }
-        }, 1000); // Wait 1 second to ensure all items are processed
-      });
+        }
+      }, 1000); // Wait 1 second to ensure all items are processed
     });
   }
 
@@ -784,10 +779,11 @@
     label.textContent = 'Filter by Price:';
     filterContainer.appendChild(label);
 
-    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true });
+    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
 
     // Create checkboxes for each color
     const colors = [
+      { name: 'purple', label: '🟣 Purple ($0)', color: '#8b5cf6' },
       { name: 'green', label: '🟢 Green ($90+)', color: '#10b981' },
       { name: 'yellow', label: '🟡 Yellow ($50-89)', color: '#fbbf24' },
       { name: 'red', label: '🔴 Red (<$50)', color: '#ef4444' }
@@ -885,7 +881,7 @@
       labelText.textContent = colorLabel;
 
       checkbox.addEventListener('change', (e) => {
-        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true });
+        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
         newFilter[name] = e.target.checked;
         setStorage(CONFIG.COLOR_FILTER_KEY, newFilter);
         colorFilter = newFilter;
@@ -1976,6 +1972,13 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
     .vine-price-red {
       background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
       color: white;
+    }
+
+    .vine-price-purple {
+      background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);
+      color: white;
+      box-shadow: 0 0 10px rgba(168, 85, 247, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.2);
     }
 
     .vine-price-text {
