@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.26.02
+// @version      1.27.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -364,7 +364,7 @@
         if (response.status === 200) {
           const price = extractPriceFromHTML(response.responseText);
           if (price !== null) {
-            setCachedPrice(asin, price);
+            // Caching is now handled by the caller based on filters
             callback({ price: price, isCached: false });
           } else {
             if (retries > 0) {
@@ -515,6 +515,14 @@
           activeFetches.delete(asin);
           if (priceData) {
             const color = getPriceColorSync(priceData.price);
+
+            // Only cache if the item is visible under current filters
+            getColorFilter((filter) => {
+              if (filter[color]) {
+                setCachedPrice(asin, priceData.price);
+              }
+            });
+
             const badge = createPriceBadge(priceData.price, false, color);
             item.appendChild(badge);
             applyColorFilter(item, color);
@@ -576,6 +584,14 @@
               activeFetches.delete(asin);
               if (priceData) {
                 const color = getPriceColorSync(priceData.price);
+
+                // Only cache if the item is visible under current filters
+                getColorFilter((filter) => {
+                  if (filter[color]) {
+                    setCachedPrice(asin, priceData.price);
+                  }
+                });
+
                 const badge = createPriceBadge(priceData.price, false, color);
                 item.appendChild(badge);
                 applyColorFilter(item, color);
@@ -758,8 +774,7 @@
       display: flex;
       justify-content: flex-end;
       margin-bottom: 16px;
-      position: sticky;
-      top: 0;
+      position: relative;
       z-index: 1000;
     `;
 
