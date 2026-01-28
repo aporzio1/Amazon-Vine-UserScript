@@ -1,5 +1,13 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.29.00 - Native Filter Design
+
+- **UI Overhaul**: Redesigned the "Price Filter" UI to be subtle and blend in with Amazon's native design.
+  - The filters are now injected directly into the **Search Toolbar**, placing them neatly between the "Additional Items" buttons and the Search box.
+  - Removed the large gradient-colored floating box.
+  - Checkboxes now use standard styling with dark gray text to look like they belong on the page.
+  - Filters are less intrusive but still easily accessible.
+
 ## Version 1.28.01 - Auto-Sync
 
 - **Feature**: Cloud Sync now runs automatically (in the background) when you load a Vine page, provided you have a GitHub token saved.
