@@ -50,6 +50,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
 - **Cache Indicator**: Shows 📦 icon for cached prices
 - **Saved Searches**: Save your favorite search terms for quick 1-click access
+- **Cloud Sync**: Sync your price cache between multiple devices using a private GitHub Gist
 - **Settings UI**: Access settings from the "Vine Tools" link in the header navigation
 - **Hide Cached Items**: Toggle to hide items you've already viewed
 - **Auto-Advance Pages**: Automatically skip to the next page when all items are hidden (requires "Hide Cached Items" to be enabled)
@@ -65,7 +66,8 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 6. **OpenAI API Key**: Add your API key in "Price Settings" to enable AI review generation
 7. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
 8. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
-9. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
+9. **Cloud Sync**: Sync your cache across devices using the "Cloud Sync" tab (requires GitHub Token)
+10. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
 
 ## How It Works
 
@@ -77,6 +79,26 @@ The script extracts product ASINs from Vine item links, checks a local cache fir
 - ✅ Firefox (with Tampermonkey, Violentmonkey, or Greasemonkey)
 - ✅ Safari (with Tampermonkey or Userscripts)
 - ✅ Opera (with Tampermonkey or Violentmonkey)
+
+## Cloud Sync Setup (Optional)
+
+To sync your price cache across multiple devices, you can use a free GitHub Gist as your private cloud storage.
+
+1. **Get a GitHub Account**: If you don't have one, sign up at [github.com](https://github.com).
+2. **Generate a Token**:
+   - Go to [GitHub Settings > Developer Settings > Personal Access Tokens > Tokens (classic)](https://github.com/settings/tokens/new)
+   - Note: You must use a **Classic** token, not a Fine-grained token.
+3. **Configure the Token**:
+   - **Note**: Give it a name like "Vine Script Sync"
+   - **Expiration**: Set to "No expiration" (or rotate it periodically)
+   - **Select scopes**: You MUST check the **`gist`** box (Create gists). This is the only permission needed.
+4. **Copy the Token**: Scroll down, click "Generate token", and copy the string starting with `ghp_...`
+5. **Add to Script**:
+   - Open "Vine Tools" on the Amazon Vine page
+   - Go to the "Cloud Sync" tab
+   - Paste your token and click "Sync Now"
+
+The script will automatically create a private Gist named `vine_price_cache.json` and keep it updated.
 
 ## Troubleshooting
 
@@ -92,3 +114,4 @@ The script extracts product ASINs from Vine item links, checks a local cache fir
 - The script uses `GM_xmlhttpRequest` to fetch prices (with localStorage fallback for storage)
 - Compatible with userscript managers that don't support all GM APIs (automatic fallbacks included)
 - Settings are stored locally using GM storage API or localStorage as fallback
+- Cloud Sync data is stored in a private GitHub Gist owned by your GitHub account

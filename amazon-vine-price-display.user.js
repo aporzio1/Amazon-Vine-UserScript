@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.27.01
+// @version      1.28.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -33,6 +33,9 @@
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     COLOR_FILTER_KEY: 'vine_color_filter',
     OPENAI_API_KEY: 'vine_openai_api_key',
+    GITHUB_TOKEN_KEY: 'vine_github_token',
+    GIST_ID_KEY: 'vine_gist_id',
+    LAST_SYNC_KEY: 'vine_last_sync',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 50000, // Optimized for high capacity
     MAX_RETRIES: 3,
@@ -1386,6 +1389,120 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
     });
   }
 
+  // Cloud Sync (GitHub Gist)
+  async function syncWithGitHub(token, manualTrigger = false) {
+    if (!token) {
+      throw new Error('No GitHub Token provided');
+    }
+
+    const gistFileName = 'vine_price_cache.json';
+    let gistId = getStorage(CONFIG.GIST_ID_KEY, null);
+
+    // Helper to request GitHub API
+    async function githubRequest(endpoint, method = 'GET', body = null) {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: method,
+          url: `https://api.github.com/${endpoint}`,
+          headers: {
+            'Authorization': `token ${token}`,
+            'Accept': 'application/vnd.github.v3+json',
+            'Content-Type': 'application/json'
+          },
+          data: body ? JSON.stringify(body) : null,
+          onload: (response) => {
+            if (response.status >= 200 && response.status < 300) {
+              resolve(JSON.parse(response.responseText));
+            } else {
+              reject(new Error(`GitHub API Error: ${response.status} ${response.statusText}`));
+            }
+          },
+          onerror: (error) => reject(error)
+        });
+      });
+    }
+
+    try {
+      // 1. Find or Create Gist
+      if (!gistId) {
+        // Search for existing gist
+        const gists = await githubRequest('gists');
+        const existingGist = gists.find(g => g.files && g.files[gistFileName]);
+
+        if (existingGist) {
+          gistId = existingGist.id;
+        } else {
+          // Create new private gist
+          const newGist = await githubRequest('gists', 'POST', {
+            description: 'Amazon Vine Price Cache (Synced)',
+            public: false,
+            files: {
+              [gistFileName]: {
+                content: JSON.stringify({})
+              }
+            }
+          });
+          gistId = newGist.id;
+        }
+        setStorage(CONFIG.GIST_ID_KEY, gistId);
+      }
+
+      // 2. Fetch Remote Cache
+      const gistData = await githubRequest(`gists/${gistId}`);
+      let remoteCache = {};
+      if (gistData.files && gistData.files[gistFileName]) {
+        try {
+          remoteCache = JSON.parse(gistData.files[gistFileName].content);
+        } catch (e) {
+          console.error('Error parsing remote cache:', e);
+          remoteCache = {};
+        }
+      }
+
+      // 3. Merge Caches (Union of keys, prefer newer timestamp)
+      return new Promise((resolve) => {
+        getCache((localCache) => {
+          const mergedCache = { ...localCache };
+          let hasChanges = false;
+          const now = Date.now();
+
+          // Merge remote into local
+          for (const [asin, entry] of Object.entries(remoteCache)) {
+            // Check expiry for remote items too
+            if (now - (entry.timestamp || 0) > CONFIG.CACHE_DURATION) continue;
+
+            if (!mergedCache[asin] || (entry.timestamp > mergedCache[asin].timestamp)) {
+              mergedCache[asin] = entry;
+              hasChanges = true;
+            }
+          }
+
+          // Check if we need to push updates back to remote
+          // (i.e. if local had newer items not in remote, or if we just merged new stuff)
+          // For simplicity, we always push back the fully merged state to ensure consistency
+
+          setCache(mergedCache, async () => {
+            // 4. Update Remote Gist
+            await githubRequest(`gists/${gistId}`, 'PATCH', {
+              files: {
+                [gistFileName]: {
+                  content: JSON.stringify(mergedCache)
+                }
+              }
+            });
+
+            setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
+            resolve({ success: true, count: Object.keys(mergedCache).length });
+          });
+        });
+      });
+
+    } catch (error) {
+      console.error('Sync failed:', error);
+      throw error;
+    }
+  }
+
   // Settings UI
   function createSettingsUI() {
     function findHeaderContainer() {
@@ -1481,6 +1598,8 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       const hideCached = getStorage(CONFIG.HIDE_CACHED_KEY, false);
       const autoAdvanceEnabled = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+      const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+      const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
 
       dialog.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
@@ -1512,17 +1631,28 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         </div>
         
         <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb;">
-          <button id="tab-searches" class="vine-tab active" style="
+          <button id="tab-searches" class="vine-tab" style="
             flex: 1;
             padding: 12px;
             background: none;
             border: none;
-            border-bottom: 3px solid #667eea;
+            border-bottom: 3px solid transparent;
             font-size: 14px;
             font-weight: 600;
-            color: #667eea;
+            color: #6b7280;
             cursor: pointer;
           ">Saved Searches</button>
+          <button id="tab-sync" class="vine-tab" style="
+            flex: 1;
+            padding: 12px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: #6b7280;
+            cursor: pointer;
+          ">Cloud Sync</button>
           <button id="tab-price" class="vine-tab" style="
             flex: 1;
             padding: 12px;
@@ -1649,6 +1779,49 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           </div>
         </div>
 
+        <div id="content-sync" class="vine-tab-content" style="display: none;">
+          <div style="margin-bottom: 24px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Cloud Sync (GitHub Gist)</label>
+            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;">
+              Sync your price cache across multiple devices using a private GitHub Gist.
+            </div>
+            
+            <div style="margin-bottom: 16px;">
+              <label style="display: block; margin-bottom: 4px; color: #6b7280;">GitHub Personal Access Token:</label>
+              <input type="password" id="vine-github-token" value="${githubToken}" 
+                placeholder="ghp_..." 
+                style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
+              <div style="font-size: 11px; color: #9ca3af; margin-top: 4px;">
+                Token requires <strong>gist</strong> permission. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Vine%20Price%20Scaler" target="_blank" style="color: #667eea;">Generate Token</a>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px;">
+              <button id="vine-sync-btn" style="
+                flex: 1;
+                padding: 10px;
+                background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+              ">
+                <span>🔄</span> Sync Now
+              </button>
+            </div>
+
+            <div id="vine-sync-status" style="font-size: 12px; color: #6b7280; text-align: center;">
+              ${lastSyncTime ? `Last synced: ${new Date(lastSyncTime).toLocaleString()}` : 'Never synced'}
+            </div>
+          </div>
+        </div>
+
         <div id="vine-status" style="
           padding: 12px;
           border-radius: 8px;
@@ -1669,6 +1842,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
       const openaiKeyInput = dialog.querySelector('#vine-openai-key');
+      const githubTokenInput = dialog.querySelector('#vine-github-token');
 
       function showStatus(message, isError = false) {
         statusDiv.textContent = message;
@@ -1709,6 +1883,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         setStorage(CONFIG.THRESHOLDS_KEY, newThresholds);
         setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
+        setStorage(CONFIG.GITHUB_TOKEN_KEY, githubTokenInput.value.trim());
 
         cachedThresholds = newThresholds;
         autoAdvance = autoAdvanceCheckbox.checked;
@@ -1750,12 +1925,15 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       // Tab switching
       const tabPrice = dialog.querySelector('#tab-price');
       const tabSearches = dialog.querySelector('#tab-searches');
+      const tabSync = dialog.querySelector('#tab-sync');
+
       const contentPrice = dialog.querySelector('#content-price');
       const contentSearches = dialog.querySelector('#content-searches');
+      const contentSync = dialog.querySelector('#content-sync');
 
       function switchTab(tab) {
-        const tabs = [tabPrice, tabSearches];
-        const contents = [contentPrice, contentSearches];
+        const tabs = [tabPrice, tabSearches, tabSync];
+        const contents = [contentPrice, contentSearches, contentSync];
 
         tabs.forEach(t => {
           t.style.borderBottomColor = 'transparent';
@@ -1767,15 +1945,52 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           tabPrice.style.borderBottomColor = '#667eea';
           tabPrice.style.color = '#667eea';
           contentPrice.style.display = 'block';
-        } else {
+        } else if (tab === 'searches') {
           tabSearches.style.borderBottomColor = '#667eea';
           tabSearches.style.color = '#667eea';
           contentSearches.style.display = 'block';
+        } else {
+          tabSync.style.borderBottomColor = '#667eea';
+          tabSync.style.color = '#667eea';
+          contentSync.style.display = 'block';
         }
       }
 
       tabPrice.addEventListener('click', () => switchTab('price'));
       tabSearches.addEventListener('click', () => switchTab('searches'));
+      tabSync.addEventListener('click', () => switchTab('sync'));
+
+      // Default to searches if opened, or price if that was last active (simplified for now)
+      switchTab('searches');
+
+      // Sync Button Logic
+      const syncBtn = dialog.querySelector('#vine-sync-btn');
+      const syncStatus = dialog.querySelector('#vine-sync-status');
+
+      syncBtn.addEventListener('click', async () => {
+        const token = githubTokenInput.value.trim();
+        if (!token) {
+          showStatus('Please save a GitHub Token first', true);
+          return;
+        }
+
+        syncBtn.disabled = true;
+        syncBtn.innerHTML = '<span>⏳</span> Syncing...';
+
+        // Save token first just in case
+        setStorage(CONFIG.GITHUB_TOKEN_KEY, token);
+
+        try {
+          const result = await syncWithGitHub(token, true);
+          showStatus(`Sync complete! (${result.count} items)`);
+          syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
+        } catch (error) {
+          showStatus('Sync failed: ' + error.message, true);
+        } finally {
+          syncBtn.disabled = false;
+          syncBtn.innerHTML = '<span>🔄</span> Sync Now';
+        }
+      });
 
       // Saved searches functionality
       const addSearchBtn = dialog.querySelector('#add-search-btn');

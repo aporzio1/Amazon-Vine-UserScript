@@ -1,5 +1,22 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.28.00 - Cloud Sync
+
+- **Feature**: Added Cloud Sync using private GitHub Gists to synchronize price cache across multiple devices/browsers.
+- **UI**: Added "Cloud Sync" tab to Settings modal for token management and manual syncing.
+- **Logic**: Implemented intelligent cache merging (union of keys, preferring newer timestamps).
+
+## Version 1.27.01 - Filter UI Improvement
+
+- **Fix**: The price filter bar at the top of the grid is now pinned (`position: relative`) so it scrolls with the page content rather than floating over it (`sticky`), preventing it from obscuring content on smaller screens.
+
+## Version 1.27.00 - Intelligent Caching
+
+- **Optimization**: The script now only caches item prices if the item is visible under the current color filters.
+- **Benefit**: Prevents the cache from filling up with "junk" items (e.g. low value/red items) that the user has filtered out, keeping the cache smaller and more relevant.
+  - If a filter hides an item, its price is fetched for display determination but **not saved** to the 7-day cache.
+  - This allows re-checking for better filtering decisions in future sessions without stale hidden data.
+
 ## Version 1.26.02 - Keyboard Navigation
 
 ### New Features
