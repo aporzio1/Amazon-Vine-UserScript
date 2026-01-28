@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.28.00
+// @version      1.28.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2318,6 +2318,18 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
             setCache(cleaned);
           }
         });
+
+        // Auto-sync if token exists
+        const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+        if (githubToken) {
+          // Add a small delay so we don't slow down initial page processing
+          setTimeout(() => {
+            console.log('Vine Price Display: Starting auto-sync...');
+            syncWithGitHub(githubToken)
+              .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} items)`))
+              .catch(err => console.error('Vine Price Display: Auto-sync failed', err));
+          }, 2000);
+        }
       }, 0);
 
       observePageChanges();

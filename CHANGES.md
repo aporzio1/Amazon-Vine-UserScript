@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.28.01 - Auto-Sync
+
+- **Feature**: Cloud Sync now runs automatically (in the background) when you load a Vine page, provided you have a GitHub token saved.
+- **Improved**: Added a 2-second delay to auto-sync to prioritize loading the page interface first.
+
 ## Version 1.28.00 - Cloud Sync
 
 - **Feature**: Added Cloud Sync using private GitHub Gists to synchronize price cache across multiple devices/browsers.
