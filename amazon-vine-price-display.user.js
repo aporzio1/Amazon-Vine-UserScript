@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.29.00
+// @version      1.30.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1490,7 +1490,23 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
   // Settings UI
   function createSettingsUI() {
     function findHeaderContainer() {
-      return document.querySelector('.vvp-header-links-container');
+      // Try multiple selectors for desktop and mobile
+      const selectors = [
+        '.vvp-header-links-container',  // Desktop
+        '#vvp-header-links',             // Mobile variant
+        '.vvp-header',                   // Mobile header
+        'nav[role="navigation"]',       // Generic mobile nav
+        '#nav-main',                     // Amazon mobile nav
+      ];
+
+      for (const selector of selectors) {
+        const element = document.querySelector(selector);
+        if (element) {
+          return element;
+        }
+      }
+
+      return null;
     }
 
     function addSettingsLink() {
@@ -1525,6 +1541,28 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       return true;
     }
 
+    // Floating Action Button (FAB) fallback for mobile
+    function createFloatingButton() {
+      // Check if already exists
+      if (document.getElementById('vine-fab-button')) {
+        return;
+      }
+
+      const fab = document.createElement('button');
+      fab.id = 'vine-fab-button';
+      fab.className = 'vine-fab';
+      fab.setAttribute('aria-label', 'Open Vine Tools');
+      fab.innerHTML = '⚙️';
+      fab.title = 'Vine Tools';
+
+      fab.addEventListener('click', (e) => {
+        e.preventDefault();
+        openSettingsModal();
+      });
+
+      document.body.appendChild(fab);
+    }
+
     let settingsModal = null;
 
     function openSettingsModal() {
@@ -1547,19 +1585,23 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 20px;
+        padding: 10px;
+        overflow-y: auto;
       `;
 
       const dialog = document.createElement('div');
+      dialog.className = 'vine-settings-dialog';
       dialog.style.cssText = `
         background: white;
         border-radius: 12px;
-        padding: 24px;
-        max-width: 500px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        max-width: 600px;
         width: 100%;
         max-height: 90vh;
         overflow-y: auto;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        position: relative;
+        margin: auto;
+        padding: 24px;
       `;
 
       let thresholds = getStorage(CONFIG.THRESHOLDS_KEY, CONFIG.DEFAULT_THRESHOLDS);
@@ -2126,9 +2168,12 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       // Also try after a short delay
       setTimeout(() => {
-        addSettingsLink();
+        if (!addSettingsLink()) {
+          // If still no header found, create a floating button (mobile fallback)
+          createFloatingButton();
+        }
         headerObserver.disconnect();
-      }, 1000);
+      }, 2000);
     }
   }
 
@@ -2234,6 +2279,75 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       }
       .vine-price-badge:hover {
         transform: none;
+      }
+    }
+    
+    /* Mobile responsiveness */
+    @media screen and (max-width: 768px) {
+      .vine-price-badge {
+        font-size: 12px;
+        padding: 6px 8px;
+        top: 4px;
+        right: 4px;
+      }
+      
+      #vine-color-filter-wrapper {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px;
+      }
+      
+      #vine-color-filter-wrapper label {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
+      
+      .vine-settings-dialog {
+        max-width: 95vw !important;
+        max-height: 95vh !important;
+        margin: 10px !important;
+        border-radius: 8px !important;
+      }
+      
+      #vine-settings-modal {
+        padding: 5px !important;
+      }
+    }
+    
+    /* Floating Action Button (FAB) for mobile */
+    .vine-fab {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .vine-fab:hover {
+      transform: scale(1.1);
+      box-shadow: 0 6px 16px rgba(102, 126, 234, 0.6);
+    }
+    
+    .vine-fab:active {
+      transform: scale(0.95);
+    }
+    
+    /* Hide FAB on desktop if header link exists */
+    @media screen and (min-width: 769px) {
+      #vvp-price-settings-link ~ body .vine-fab {
+        display: none;
       }
     }
   `);

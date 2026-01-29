@@ -1,5 +1,24 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.30.00 - Mobile Browser Support
+
+- **Mobile Compatibility**: Added comprehensive mobile browser support for
+  better accessibility across all devices.
+  - **Floating Action Button (FAB)**: When the desktop header navigation is
+    not found (typically on mobile browsers), a floating settings button now
+    appears in the bottom-right corner.
+  - **Multiple Header Selectors**: Improved header detection with fallback
+    selectors for both desktop and mobile Amazon layouts.
+  - **Responsive Styling**: Added mobile-optimized CSS with media queries for
+    screens under 768px:
+    - Smaller price badges (12px font, reduced padding)
+    - Wrapped color filter checkboxes with better spacing
+    - Full-width settings dialog (95vw) for better mobile viewing
+  - **Touch-Friendly Interface**: Settings modal now has proper padding and
+    overflow handling for mobile browsers.
+  - **Accessibility**: FAB includes proper ARIA labels and touch-optimized
+    sizing (56px).
+
 ## Version 1.29.00 - Native Filter Design
 
 - **UI Overhaul**: Redesigned the "Price Filter" UI to be subtle and blend in with Amazon's native design.
