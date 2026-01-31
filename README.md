@@ -75,7 +75,6 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 
 - **V V (double-tap)**: Open/Close Vine Tools modal (press V twice within 500ms)
 - **Escape**: Close any open modal
-- **Ctrl/Cmd + Shift + K**: Force sync now (requires GitHub token)
 - **← (Left Arrow)**: Go to previous page
 - **→ (Right Arrow)**: Go to next page
 
