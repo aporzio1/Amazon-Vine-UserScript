@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.34.00
+// @version      1.34.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1986,7 +1986,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
               <tbody>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">${navigator.platform.includes('Mac') ? 'Cmd' : 'Ctrl'} + K</code>
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">${navigator.platform.includes('Mac') ? 'Cmd' : 'Ctrl'} + Shift + V</code>
                   </td>
                   <td style="padding: 12px; color: #6b7280;">Open/Close Vine Tools</td>
                 </tr>
@@ -2623,8 +2623,8 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         activeElement.isContentEditable
       );
 
-      // Ctrl/Cmd + K: Open/Close Vine Tools (works even when typing)
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !e.shiftKey) {
+      // Ctrl/Cmd + Shift + V: Open/Close Vine Tools (works even when typing)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
         e.preventDefault();
         openSettingsModal();
         return;
