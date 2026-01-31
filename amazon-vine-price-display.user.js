@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.35.01
+// @version      1.36.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1998,6 +1998,36 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">1</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Hide Cached</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">2</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Purple filter</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">3</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Green filter</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">4</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Yellow filter</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">5</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Red filter</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">←</code>
                   </td>
                   <td style="padding: 12px; color: #6b7280;">Go to previous page</td>
@@ -2655,6 +2685,62 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       // Don't process other shortcuts if typing
       if (isTyping) {
+        return;
+      }
+
+      // Number keys: Toggle filters (only when NOT typing)
+      // 1: Toggle Hide Cached
+      if (e.key === '1') {
+        const checkbox = document.getElementById('vine-filter-hide-cached');
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+          console.log('[Vine] Toggled Hide Cached:', checkbox.checked);
+        }
+        return;
+      }
+
+      // 2: Toggle Purple filter
+      if (e.key === '2') {
+        const checkbox = document.getElementById('vine-filter-purple');
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+          console.log('[Vine] Toggled Purple filter:', checkbox.checked);
+        }
+        return;
+      }
+
+      // 3: Toggle Green filter
+      if (e.key === '3') {
+        const checkbox = document.getElementById('vine-filter-green');
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+          console.log('[Vine] Toggled Green filter:', checkbox.checked);
+        }
+        return;
+      }
+
+      // 4: Toggle Yellow filter
+      if (e.key === '4') {
+        const checkbox = document.getElementById('vine-filter-yellow');
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+          console.log('[Vine] Toggled Yellow filter:', checkbox.checked);
+        }
+        return;
+      }
+
+      // 5: Toggle Red filter
+      if (e.key === '5') {
+        const checkbox = document.getElementById('vine-filter-red');
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+          console.log('[Vine] Toggled Red filter:', checkbox.checked);
+        }
         return;
       }
 
