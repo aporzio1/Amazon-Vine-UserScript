@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.34.03
+// @version      1.35.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1986,7 +1986,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
               <tbody>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">${navigator.platform.includes('Mac') ? 'Cmd' : 'Ctrl'} + ;</code>
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">V V (double-tap)</code>
                   </td>
                   <td style="padding: 12px; color: #6b7280;">Open/Close Vine Tools</td>
                 </tr>
@@ -2616,6 +2616,8 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
   function setupKeyboardNavigation() {
     console.log('[Vine] Setting up keyboard navigation...');
 
+    let lastVPress = 0;
+
     const keyHandler = (e) => {
       // Don't trigger if user is typing in an input field (except for specific shortcuts)
       const activeElement = document.activeElement;
@@ -2625,13 +2627,24 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         activeElement.isContentEditable
       );
 
-      // Ctrl/Cmd + ; : Open/Close Vine Tools (works even when typing)
-      if ((e.ctrlKey || e.metaKey) && e.key === ';' && !e.shiftKey) {
-        console.log('[Vine] Cmd+; detected, opening Vine Tools...');
-        e.preventDefault();
-        e.stopPropagation();
-        openSettingsModal();
-        return false;
+      // Double-tap V: Open/Close Vine Tools (only when NOT typing)
+      // Press V twice within 500ms to open Vine Tools
+      if (!isTyping && e.key === 'v' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+        const now = Date.now();
+        const timeSinceLastV = now - lastVPress;
+
+        if (timeSinceLastV < 500) {
+          // Double-tap detected!
+          console.log('[Vine] Double-tap V detected, opening Vine Tools...');
+          e.preventDefault();
+          e.stopPropagation();
+          openSettingsModal();
+          lastVPress = 0; // Reset
+          return false;
+        } else {
+          // First tap
+          lastVPress = now;
+        }
       }
 
       // Ctrl/Cmd + Shift + K: Force Sync Now
