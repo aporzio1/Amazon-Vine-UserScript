@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.34.02
+// @version      1.34.03
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2614,7 +2614,9 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
   // Keyboard navigation
   function setupKeyboardNavigation() {
-    document.addEventListener('keydown', (e) => {
+    console.log('[Vine] Setting up keyboard navigation...');
+
+    const keyHandler = (e) => {
       // Don't trigger if user is typing in an input field (except for specific shortcuts)
       const activeElement = document.activeElement;
       const isTyping = activeElement && (
@@ -2625,9 +2627,11 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       // Ctrl/Cmd + ; : Open/Close Vine Tools (works even when typing)
       if ((e.ctrlKey || e.metaKey) && e.key === ';' && !e.shiftKey) {
+        console.log('[Vine] Cmd+; detected, opening Vine Tools...');
         e.preventDefault();
+        e.stopPropagation();
         openSettingsModal();
-        return;
+        return false;
       }
 
       // Ctrl/Cmd + Shift + K: Force Sync Now
@@ -2692,7 +2696,11 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           prevButton.click();
         }
       }
-    });
+    };
+
+    // Use window instead of document and capture phase for better Safari support
+    window.addEventListener('keydown', keyHandler, true);
+    console.log('[Vine] Keyboard navigation ready');
   }
 
   // Initialize
