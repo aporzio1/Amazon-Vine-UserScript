@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.36.00
+// @version      1.36.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -64,6 +64,9 @@
       '.a-price .a-price-whole'
     ]
   };
+
+  // Global reference to settings modal opener (for keyboard shortcuts)
+  let openSettingsModal = null;
 
   // Storage helpers with GM API fallback to localStorage
   const STORAGE_PREFIX = 'vine_price_display_';
@@ -1676,7 +1679,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
     let settingsModal = null;
 
-    function openSettingsModal() {
+    openSettingsModal = function () {
       if (settingsModal) {
         document.body.removeChild(settingsModal);
         settingsModal = null;
@@ -2435,7 +2438,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       settingsModal.appendChild(dialog);
       document.body.appendChild(settingsModal);
-    }
+    };
 
     // Try to add the link immediately
     if (!addSettingsLink()) {
