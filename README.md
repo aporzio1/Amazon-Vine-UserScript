@@ -49,8 +49,8 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **Customizable Price Ranges**: Set custom minimum prices for each color category
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
 - **Cache Indicator**: Shows 📦 icon for cached prices
-- **Saved Searches**: Save your favorite search terms for quick 1-click access
-- **Cloud Sync**: Sync your price cache between multiple devices using a private GitHub Gist
+- **Saved Searches**: Save your favorite search terms for quick 1-click access, with the ability to reorder them
+- **Cloud Sync**: Sync your price cache and saved searches between multiple devices using private GitHub Gists
 - **Settings UI**: Access settings from the "Vine Tools" link in the header navigation
 - **Hide Cached Items**: Toggle to hide items you've already viewed
 - **Auto-Advance Pages**: Automatically skip to the next page when all items are hidden (requires "Hide Cached Items" to be enabled)
@@ -61,12 +61,12 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 1. **Color Filter**: Use the checkboxes at the top of the grid to filter items by price range (green/yellow/red)
 2. **AI Review Generator**: On product pages, use the AI generator to create reviews (requires OpenAI API key in settings)
 3. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
-4. **Saved Searches**: Use the "Saved Searches" tab to add and manage your favorite search terms
+4. **Saved Searches**: Use the "Saved Searches" tab to add, manage, and reorder (using ▲▼ buttons) your favorite search terms
 5. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
 6. **OpenAI API Key**: Add your API key in "Price Settings" to enable AI review generation
 7. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
 8. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
-9. **Cloud Sync**: Sync your cache across devices using the "Cloud Sync" tab (requires GitHub Token)
+9. **Cloud Sync**: Sync your cache and saved searches across devices using the "Cloud Sync" tab (requires GitHub Token)
 10. **Clear Cache**: Click "Clear Cache" to remove all cached prices if needed
 
 ## How It Works
@@ -82,7 +82,7 @@ The script extracts product ASINs from Vine item links, checks a local cache fir
 
 ## Cloud Sync Setup (Optional)
 
-To sync your price cache across multiple devices, you can use a free GitHub Gist as your private cloud storage.
+To sync your price cache and saved searches across multiple devices, you can use free GitHub Gists as your private cloud storage.
 
 1. **Get a GitHub Account**: If you don't have one, sign up at [github.com](https://github.com).
 2. **Generate a Token**:
@@ -98,7 +98,7 @@ To sync your price cache across multiple devices, you can use a free GitHub Gist
    - Go to the "Cloud Sync" tab
    - Paste your token and click "Sync Now"
 
-The script will automatically create a private Gist named `vine_price_cache.json` and keep it updated.
+The script will automatically create two private Gists (`vine_price_cache.json` and `vine_saved_searches.json`) and keep them updated.
 
 ## Troubleshooting
 

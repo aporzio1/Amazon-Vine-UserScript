@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.30.00
+// @version      1.32.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -35,6 +35,7 @@
     OPENAI_API_KEY: 'vine_openai_api_key',
     GITHUB_TOKEN_KEY: 'vine_github_token',
     GIST_ID_KEY: 'vine_gist_id',
+    GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
     LAST_SYNC_KEY: 'vine_last_sync',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 50000, // Optimized for high capacity
@@ -1487,6 +1488,121 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
     }
   }
 
+  // Sync Saved Searches with GitHub Gist
+  async function syncSearchesWithGitHub(token, manualTrigger = false) {
+    if (!token) {
+      throw new Error('No GitHub Token provided');
+    }
+
+    const gistFileName = 'vine_saved_searches.json';
+    let gistId = getStorage(CONFIG.GIST_SEARCHES_ID_KEY, null);
+
+    // Helper to request GitHub API
+    async function githubRequest(endpoint, method = 'GET', body = null) {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: method,
+          url: `https://api.github.com/${endpoint}`,
+          headers: {
+            'Authorization': `token ${token}`,
+            'Accept': 'application/vnd.github.v3+json',
+            'Content-Type': 'application/json'
+          },
+          data: body ? JSON.stringify(body) : null,
+          onload: (response) => {
+            if (response.status >= 200 && response.status < 300) {
+              resolve(JSON.parse(response.responseText));
+            } else {
+              reject(new Error(`GitHub API Error: ${response.status} ${response.statusText}`));
+            }
+          },
+          onerror: (error) => reject(error)
+        });
+      });
+    }
+
+    try {
+      // 1. Find or Create Gist for Saved Searches
+      if (!gistId) {
+        // Search for existing gist
+        const gists = await githubRequest('gists');
+        const existingGist = gists.find(g => g.files && g.files[gistFileName]);
+
+        if (existingGist) {
+          gistId = existingGist.id;
+        } else {
+          // Create new private gist
+          const newGist = await githubRequest('gists', 'POST', {
+            description: 'Amazon Vine Saved Searches (Synced)',
+            public: false,
+            files: {
+              [gistFileName]: {
+                content: JSON.stringify([])
+              }
+            }
+          });
+          gistId = newGist.id;
+        }
+        setStorage(CONFIG.GIST_SEARCHES_ID_KEY, gistId);
+      }
+
+      // 2. Fetch Remote Searches
+      const gistData = await githubRequest(`gists/${gistId}`);
+      let remoteSearches = [];
+      if (gistData.files && gistData.files[gistFileName]) {
+        try {
+          remoteSearches = JSON.parse(gistData.files[gistFileName].content);
+        } catch (e) {
+          console.error('Error parsing remote searches:', e);
+          remoteSearches = [];
+        }
+      }
+
+      // 3. Merge Searches (Union of searches by unique term, combine names)
+      const localSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+      const mergedMap = new Map();
+
+      // Add local searches
+      localSearches.forEach(search => {
+        const key = search.term.toLowerCase();
+        if (!mergedMap.has(key)) {
+          mergedMap.set(key, search);
+        }
+      });
+
+      // Merge remote searches
+      let hasChanges = false;
+      remoteSearches.forEach(search => {
+        const key = search.term.toLowerCase();
+        if (!mergedMap.has(key)) {
+          mergedMap.set(key, search);
+          hasChanges = true;
+        }
+      });
+
+      const mergedSearches = Array.from(mergedMap.values());
+
+      // Save merged searches locally
+      setStorage(CONFIG.SAVED_SEARCHES_KEY, mergedSearches);
+
+      // 4. Update Remote Gist
+      await githubRequest(`gists/${gistId}`, 'PATCH', {
+        files: {
+          [gistFileName]: {
+            content: JSON.stringify(mergedSearches)
+          }
+        }
+      });
+
+      return { success: true, count: mergedSearches.length };
+
+    } catch (error) {
+      console.error('Searches sync failed:', error);
+      throw error;
+    }
+  }
+
+
   // Settings UI
   function createSettingsUI() {
     function findHeaderContainer() {
@@ -1989,6 +2105,19 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       // Default to searches if opened, or price if that was last active (simplified for now)
       switchTab('searches');
 
+      // Helper to sync searches in the background
+      async function syncSearchesInBackground() {
+        const token = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+        if (token) {
+          try {
+            await syncSearchesWithGitHub(token, false);
+          } catch (error) {
+            console.error('Background search sync failed:', error);
+            // Silent fail - don't disrupt user experience
+          }
+        }
+      }
+
       // Sync Button Logic
       const syncBtn = dialog.querySelector('#vine-sync-btn');
       const syncStatus = dialog.querySelector('#vine-sync-status');
@@ -2007,9 +2136,15 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         setStorage(CONFIG.GITHUB_TOKEN_KEY, token);
 
         try {
-          const result = await syncWithGitHub(token, true);
-          showStatus(`Sync complete! (${result.count} items)`);
+          // Sync both cache and searches
+          const cacheResult = await syncWithGitHub(token, true);
+          const searchesResult = await syncSearchesWithGitHub(token, true);
+
+          showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches)`);
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
+
+          // Refresh the searches list in case new ones were synced
+          renderSearches();
         } catch (error) {
           showStatus('Sync failed: ' + error.message, true);
         } finally {
@@ -2033,6 +2168,28 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
         searchesList.innerHTML = searches.map((search, index) => `
           <div style="display: flex; gap: 8px; align-items: center; padding: 10px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <button data-search-index="${index}" class="search-move-up-btn" style="
+                padding: 4px 8px;
+                background: #6b7280;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 10px;
+                cursor: pointer;
+                ${index === 0 ? 'opacity: 0.3; cursor: not-allowed;' : ''}
+              " ${index === 0 ? 'disabled' : ''}>▲</button>
+              <button data-search-index="${index}" class="search-move-down-btn" style="
+                padding: 4px 8px;
+                background: #6b7280;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 10px;
+                cursor: pointer;
+                ${index === searches.length - 1 ? 'opacity: 0.3; cursor: not-allowed;' : ''}
+              " ${index === searches.length - 1 ? 'disabled' : ''}>▼</button>
+            </div>
             <button data-search-index="${index}" class="search-go-btn" style="
               flex: 1;
               padding: 8px 12px;
@@ -2079,7 +2236,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         });
 
         searchesList.querySelectorAll('.search-edit-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
+          btn.addEventListener('click', async (e) => {
             const index = parseInt(e.target.dataset.searchIndex);
             const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
             const search = searches[index];
@@ -2090,13 +2247,15 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
                 setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
                 renderSearches();
                 showStatus('Search renamed!');
+                // Sync in background
+                syncSearchesInBackground();
               }
             }
           });
         });
 
         searchesList.querySelectorAll('.search-delete-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
+          btn.addEventListener('click', async (e) => {
             const index = parseInt(e.target.dataset.searchIndex);
             const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
             if (confirm(`Delete search "${searches[index].name}"?`)) {
@@ -2104,12 +2263,47 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
               setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
               renderSearches();
               showStatus('Search deleted!');
+              // Sync in background
+              syncSearchesInBackground();
+            }
+          });
+        });
+
+        // Move up/down buttons
+        searchesList.querySelectorAll('.search-move-up-btn').forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            const index = parseInt(e.target.dataset.searchIndex);
+            if (index > 0) {
+              const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+              // Swap with previous item
+              [searches[index - 1], searches[index]] = [searches[index], searches[index - 1]];
+              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+              renderSearches();
+              showStatus('Search moved up!');
+              // Sync in background
+              syncSearchesInBackground();
+            }
+          });
+        });
+
+        searchesList.querySelectorAll('.search-move-down-btn').forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            const index = parseInt(e.target.dataset.searchIndex);
+            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+            if (index < searches.length - 1) {
+              // Swap with next item
+              [searches[index], searches[index + 1]] = [searches[index + 1], searches[index]];
+              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+              renderSearches();
+              showStatus('Search moved down!');
+              // Sync in background
+              syncSearchesInBackground();
             }
           });
         });
       }
 
-      addSearchBtn.addEventListener('click', () => {
+      addSearchBtn.addEventListener('click', async () => {
         const term = newSearchTerm.value.trim();
 
         if (!term) {
@@ -2124,6 +2318,8 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         newSearchTerm.value = '';
         renderSearches();
         showStatus('Search added!');
+        // Sync in background
+        syncSearchesInBackground();
       });
 
       // Allow Enter key to add search
@@ -2423,9 +2619,16 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           // Add a small delay so we don't slow down initial page processing
           setTimeout(() => {
             console.log('Vine Price Display: Starting auto-sync...');
+
+            // Sync cache
             syncWithGitHub(githubToken)
-              .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} items)`))
-              .catch(err => console.error('Vine Price Display: Auto-sync failed', err));
+              .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} cached items)`))
+              .catch(err => console.error('Vine Price Display: Cache auto-sync failed', err));
+
+            // Sync searches
+            syncSearchesWithGitHub(githubToken)
+              .then(result => console.log(`Vine Price Display: Searches auto-sync complete (${result.count} searches)`))
+              .catch(err => console.error('Vine Price Display: Searches auto-sync failed', err));
           }, 2000);
         }
       }, 0);
