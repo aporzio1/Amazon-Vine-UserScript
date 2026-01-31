@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.33.00
+// @version      1.34.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -37,6 +37,8 @@
     GIST_ID_KEY: 'vine_gist_id',
     GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
     LAST_SYNC_KEY: 'vine_last_sync',
+    SHIPPING_ADDRESS_KEY: 'vine_shipping_address',
+    ENABLE_QUICK_BUY_KEY: 'vine_enable_quick_buy',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 50000, // Optimized for high capacity
     MAX_RETRIES: 3,
@@ -1799,6 +1801,17 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
             color: #6b7280;
             cursor: pointer;
           ">Price Settings</button>
+          <button id="tab-shortcuts" class="vine-tab" style="
+            flex: 1;
+            padding: 12px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            font-size: 14px;
+            font-weight: 600;
+            color: #6b7280;
+            cursor: pointer;
+          ">Shortcuts</button>
         </div>
 
         <div id="content-price" class="vine-tab-content" style="display: none;">
@@ -1957,6 +1970,55 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           </div>
         </div>
 
+        <div id="content-shortcuts" class="vine-tab-content" style="display: none;">
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 12px; font-weight: 600; color: #374151; font-size: 16px;">⌨️ Keyboard Shortcuts</label>
+            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;">
+              Use these keyboard shortcuts to navigate faster and boost your productivity!
+            </div>
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr style="background: #f9fafb;">
+                  <th style="padding: 12px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #374151;">Shortcut</th>
+                  <th style="padding: 12px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #374151;">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">${navigator.platform.includes('Mac') ? 'Cmd' : 'Ctrl'} + K</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Open/Close Vine Tools</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">Escape</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Close any open modal</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">${navigator.platform.includes('Mac') ? 'Cmd' : 'Ctrl'} + Shift + K</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Force sync now (requires GitHub token)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">←</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Go to previous page</td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">→</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Go to next page</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div id="vine-status" style="
           padding: 12px;
           border-radius: 8px;
@@ -2061,14 +2123,16 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       const tabPrice = dialog.querySelector('#tab-price');
       const tabSearches = dialog.querySelector('#tab-searches');
       const tabSync = dialog.querySelector('#tab-sync');
+      const tabShortcuts = dialog.querySelector('#tab-shortcuts');
 
       const contentPrice = dialog.querySelector('#content-price');
       const contentSearches = dialog.querySelector('#content-searches');
       const contentSync = dialog.querySelector('#content-sync');
+      const contentShortcuts = dialog.querySelector('#content-shortcuts');
 
       function switchTab(tab) {
-        const tabs = [tabPrice, tabSearches, tabSync];
-        const contents = [contentPrice, contentSearches, contentSync];
+        const tabs = [tabPrice, tabSearches, tabSync, tabShortcuts];
+        const contents = [contentPrice, contentSearches, contentSync, contentShortcuts];
 
         tabs.forEach(t => {
           t.style.borderBottomColor = 'transparent';
@@ -2084,16 +2148,21 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           tabSearches.style.borderBottomColor = '#667eea';
           tabSearches.style.color = '#667eea';
           contentSearches.style.display = 'block';
-        } else {
+        } else if (tab === 'sync') {
           tabSync.style.borderBottomColor = '#667eea';
           tabSync.style.color = '#667eea';
           contentSync.style.display = 'block';
+        } else if (tab === 'shortcuts') {
+          tabShortcuts.style.borderBottomColor = '#667eea';
+          tabShortcuts.style.color = '#667eea';
+          contentShortcuts.style.display = 'block';
         }
       }
 
       tabPrice.addEventListener('click', () => switchTab('price'));
       tabSearches.addEventListener('click', () => switchTab('searches'));
       tabSync.addEventListener('click', () => switchTab('sync'));
+      tabShortcuts.addEventListener('click', () => switchTab('shortcuts'));
 
       // Default to searches if opened, or price if that was last active (simplified for now)
       switchTab('searches');
@@ -2546,7 +2615,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
   // Keyboard navigation
   function setupKeyboardNavigation() {
     document.addEventListener('keydown', (e) => {
-      // Don't trigger if user is typing in an input field
+      // Don't trigger if user is typing in an input field (except for specific shortcuts)
       const activeElement = document.activeElement;
       const isTyping = activeElement && (
         activeElement.tagName === 'INPUT' ||
@@ -2554,6 +2623,45 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         activeElement.isContentEditable
       );
 
+      // Ctrl/Cmd + K: Open/Close Vine Tools (works even when typing)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !e.shiftKey) {
+        e.preventDefault();
+        openSettingsModal();
+        return;
+      }
+
+      // Ctrl/Cmd + Shift + K: Force Sync Now
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'K') {
+        e.preventDefault();
+        const token = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+        if (token) {
+          console.log('Vine: Force sync triggered via keyboard shortcut');
+          Promise.all([
+            syncWithGitHub(token, true),
+            syncSearchesWithGitHub(token, true)
+          ]).then(() => {
+            console.log('Vine: Force sync completed');
+          }).catch(err => {
+            console.error('Vine: Force sync failed', err);
+          });
+        } else {
+          console.log('Vine: Cannot sync - no GitHub token configured');
+        }
+        return;
+      }
+
+      // Escape: Close open modals
+      if (e.key === 'Escape') {
+        const modal = document.getElementById('vine-settings-modal');
+        if (modal) {
+          e.preventDefault();
+          document.body.removeChild(modal);
+          settingsModal = null;
+          return;
+        }
+      }
+
+      // Don't process other shortcuts if typing
       if (isTyping) {
         return;
       }
