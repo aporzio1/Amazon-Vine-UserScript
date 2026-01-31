@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.36.01
+// @version      1.36.02
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -458,15 +458,32 @@
     return badge;
   }
 
+  // Helper to check if an item is Pre-Release
+  function isPreReleaseItem(item) {
+    // Check for "Pre-Release" text in the item tile
+    // This covers the badge shown in the screenshot
+    return (item.textContent || item.innerText || '').includes('Pre-Release');
+  }
+
   // Apply color filter to an item
   function applyColorFilter(item, color) {
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
         const isCached = item.dataset.vineIsCached === 'true';
+        const isPreRelease = isPreReleaseItem(item);
 
         if (isCached && shouldHideCached) {
           item.style.display = 'none';
           item.dataset.vineHidden = 'true';
+        } else if (isPreRelease) {
+          // Pre-release items are controlled by their own filter, regardless of price color
+          if (filter.preRelease === false) {
+            item.style.display = 'none';
+            item.dataset.vineHidden = 'true';
+          } else {
+            item.style.display = '';
+            item.dataset.vineHidden = 'false';
+          }
         } else if (!filter[color]) {
           item.style.display = 'none';
           item.dataset.vineHidden = 'true';
@@ -815,7 +832,9 @@
       flex-wrap: wrap;
     `;
 
-    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
+    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true, preRelease: true });
+    // Ensure preRelease exists for existing users who might have old config
+    if (typeof currentFilter.preRelease === 'undefined') currentFilter.preRelease = true;
 
     // Hide Cached Items Toggle
     const hideCachedWrapper = document.createElement('label');
@@ -862,6 +881,7 @@
 
     // Create checkboxes for each color
     const colors = [
+      { name: 'preRelease', label: '📅 Pre-Release', color: '#c08309' }, // Brown/Gold like the badge
       { name: 'purple', label: '🟣 Purple ($0)', color: '#8b5cf6' },
       { name: 'green', label: '🟢 Green ($90+)', color: '#10b981' },
       { name: 'yellow', label: '🟡 Yellow', color: '#fbbf24' },
@@ -890,10 +910,12 @@
       `;
 
       const labelText = document.createElement('span');
+      labelText.style.color = color;
+      labelText.style.fontWeight = 'bold';
       labelText.textContent = colorLabel;
 
       checkbox.addEventListener('change', (e) => {
-        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
+        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true, preRelease: true });
         newFilter[name] = e.target.checked;
         setStorage(CONFIG.COLOR_FILTER_KEY, newFilter);
         colorFilter = newFilter;
@@ -2031,6 +2053,12 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
+                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">6</code>
+                  </td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Pre-Release filter</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">←</code>
                   </td>
                   <td style="padding: 12px; color: #6b7280;">Go to previous page</td>
@@ -2743,6 +2771,17 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           checkbox.checked = !checkbox.checked;
           checkbox.dispatchEvent(new Event('change'));
           console.log('[Vine] Toggled Red filter:', checkbox.checked);
+        }
+        return;
+      }
+
+      // 6: Toggle Pre-Release filter
+      if (e.key === '6') {
+        const checkbox = document.getElementById('vine-filter-preRelease');
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+          console.log('[Vine] Toggled Pre-Release filter:', checkbox.checked);
         }
         return;
       }

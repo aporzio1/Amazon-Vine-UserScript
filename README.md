@@ -80,6 +80,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **3**: Toggle Green filter (🟢 $90+ items)
 - **4**: Toggle Yellow filter (🟡 mid-range items)
 - **5**: Toggle Red filter (🔴 low-value items)
+- **6**: Toggle Pre-Release filter (📅)
 - **← (Left Arrow)**: Go to previous page
 - **→ (Right Arrow)**: Go to next page
 
