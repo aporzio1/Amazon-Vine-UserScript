@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.36.02
+// @version      1.36.03
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2031,31 +2031,31 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
                   <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">2</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Purple filter</td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Pre-Release filter</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">3</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Green filter</td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Purple filter</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">4</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Yellow filter</td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Green filter</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">5</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Red filter</td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Yellow filter</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">6</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Pre-Release filter</td>
+                  <td style="padding: 12px; color: #6b7280;">Toggle Red filter</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
@@ -2731,8 +2731,19 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         return;
       }
 
-      // 2: Toggle Purple filter
+      // 2: Toggle Pre-Release filter
       if (e.key === '2') {
+        const checkbox = document.getElementById('vine-filter-preRelease');
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+          console.log('[Vine] Toggled Pre-Release filter:', checkbox.checked);
+        }
+        return;
+      }
+
+      // 3: Toggle Purple filter
+      if (e.key === '3') {
         const checkbox = document.getElementById('vine-filter-purple');
         if (checkbox) {
           checkbox.checked = !checkbox.checked;
@@ -2742,8 +2753,8 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         return;
       }
 
-      // 3: Toggle Green filter
-      if (e.key === '3') {
+      // 4: Toggle Green filter
+      if (e.key === '4') {
         const checkbox = document.getElementById('vine-filter-green');
         if (checkbox) {
           checkbox.checked = !checkbox.checked;
@@ -2753,8 +2764,8 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         return;
       }
 
-      // 4: Toggle Yellow filter
-      if (e.key === '4') {
+      // 5: Toggle Yellow filter
+      if (e.key === '5') {
         const checkbox = document.getElementById('vine-filter-yellow');
         if (checkbox) {
           checkbox.checked = !checkbox.checked;
@@ -2764,24 +2775,13 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         return;
       }
 
-      // 5: Toggle Red filter
-      if (e.key === '5') {
+      // 6: Toggle Red filter
+      if (e.key === '6') {
         const checkbox = document.getElementById('vine-filter-red');
         if (checkbox) {
           checkbox.checked = !checkbox.checked;
           checkbox.dispatchEvent(new Event('change'));
           console.log('[Vine] Toggled Red filter:', checkbox.checked);
-        }
-        return;
-      }
-
-      // 6: Toggle Pre-Release filter
-      if (e.key === '6') {
-        const checkbox = document.getElementById('vine-filter-preRelease');
-        if (checkbox) {
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event('change'));
-          console.log('[Vine] Toggled Pre-Release filter:', checkbox.checked);
         }
         return;
       }

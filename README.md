@@ -76,11 +76,11 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **V V (double-tap)**: Open/Close Vine Tools modal (press V twice within 500ms)
 - **Escape**: Close any open modal
 - **1**: Toggle Hide Cached filter
-- **2**: Toggle Purple filter (🟣 $0 items)
-- **3**: Toggle Green filter (🟢 $90+ items)
-- **4**: Toggle Yellow filter (🟡 mid-range items)
-- **5**: Toggle Red filter (🔴 low-value items)
-- **6**: Toggle Pre-Release filter (📅)
+- **2**: Toggle Pre-Release filter (📅)
+- **3**: Toggle Purple filter (🟣 $0 items)
+- **4**: Toggle Green filter (🟢 $90+ items)
+- **5**: Toggle Yellow filter (🟡 mid-range items)
+- **6**: Toggle Red filter (🔴 low-value items)
 - **← (Left Arrow)**: Go to previous page
 - **→ (Right Arrow)**: Go to next page
 
