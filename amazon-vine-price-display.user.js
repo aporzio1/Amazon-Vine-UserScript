@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.32.00
+// @version      1.33.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1558,34 +1558,27 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         }
       }
 
-      // 3. Merge Searches (Union of searches by unique term, combine names)
+      // 3. Merge Searches - Prioritize local order, add new remote searches at end
       const localSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-      const mergedMap = new Map();
+      const localTerms = new Set(localSearches.map(s => s.term.toLowerCase()));
 
-      // Add local searches
-      localSearches.forEach(search => {
-        const key = search.term.toLowerCase();
-        if (!mergedMap.has(key)) {
-          mergedMap.set(key, search);
-        }
-      });
+      // Start with local searches (preserving order)
+      const mergedSearches = [...localSearches];
 
-      // Merge remote searches
-      let hasChanges = false;
+      // Add any remote searches that aren't in local
       remoteSearches.forEach(search => {
         const key = search.term.toLowerCase();
-        if (!mergedMap.has(key)) {
-          mergedMap.set(key, search);
-          hasChanges = true;
+        if (!localTerms.has(key)) {
+          mergedSearches.push(search);
         }
       });
 
-      const mergedSearches = Array.from(mergedMap.values());
+      // Only update local storage if we added new searches from remote
+      if (mergedSearches.length > localSearches.length) {
+        setStorage(CONFIG.SAVED_SEARCHES_KEY, mergedSearches);
+      }
 
-      // Save merged searches locally
-      setStorage(CONFIG.SAVED_SEARCHES_KEY, mergedSearches);
-
-      // 4. Update Remote Gist
+      // 4. Update Remote Gist with merged list
       await githubRequest(`gists/${gistId}`, 'PATCH', {
         files: {
           [gistFileName]: {
@@ -2146,7 +2139,9 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           // Refresh the searches list in case new ones were synced
           renderSearches();
         } catch (error) {
-          showStatus('Sync failed: ' + error.message, true);
+          console.error('Sync error details:', error);
+          const errorMsg = error.message || String(error);
+          showStatus('Sync failed: ' + errorMsg, true);
         } finally {
           syncBtn.disabled = false;
           syncBtn.innerHTML = '<span>🔄</span> Sync Now';
