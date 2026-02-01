@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.04
+// @version      1.37.06
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -471,32 +471,39 @@
 
   // Helper to check if an item is Pre-Release
   function isPreReleaseItem(item) {
-    // 1. Check text content
-    const text = (item.textContent || item.innerText || '').toLowerCase();
-    if (text.includes('pre-release') ||
-      text.includes('available for pre-order') ||
-      text.includes('pre-order') ||
-      text.includes('presale') ||
-      text.includes('will be released on')) {
-      // console.log('[Vine] Found Pre-Release item via text:', item); // Uncomment for verbose debugging
+    // 0. Check for definitive Vine class
+    if (item.querySelector('.vvp-badge-prerelease')) {
+      return true;
+    }
+
+    // 1. Check text content with normalization (remove special chars/spaces)
+    // This handles "Pre-Release", "Pre - Release", "Pre Release", etc.
+    const rawText = (item.textContent || item.innerText || '');
+    const normalizedText = rawText.toLowerCase().replace(/[\W_]+/g, '');
+
+    if (normalizedText.includes('prerelease') ||
+      normalizedText.includes('availableforpreorder') ||
+      normalizedText.includes('preorder') ||
+      normalizedText.includes('presale') ||
+      normalizedText.includes('willbereleasedon')) {
       return true;
     }
 
     // 2. Check image alt text (badges are often images)
     const images = item.querySelectorAll('img');
     for (const img of images) {
-      const alt = (img.alt || '').toLowerCase();
-      const title = (img.title || '').toLowerCase();
-      if (alt.includes('pre-release') || title.includes('pre-release')) {
+      const alt = (img.alt || '').toLowerCase().replace(/[\W_]+/g, '');
+      const title = (img.title || '').toLowerCase().replace(/[\W_]+/g, '');
+      if (alt.includes('prerelease') || title.includes('prerelease')) {
         return true;
       }
     }
 
-    // 3. Check specific badge selectors (Amazon standard badges)
-    const badgeText = item.querySelector('.a-badge-text');
-    if (badgeText) {
-      const label = (badgeText.textContent || '').toLowerCase();
-      if (label.includes('pre-release')) {
+    // 3. Check specific badge selectors (checking ALL badges, not just the first found)
+    const badgeTexts = item.querySelectorAll('.a-badge-text');
+    for (const badge of badgeTexts) {
+      const label = (badge.textContent || '').toLowerCase().replace(/[\W_]+/g, '');
+      if (label.includes('prerelease')) {
         return true;
       }
     }
