@@ -2151,11 +2151,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
                   <td style="padding: 12px; color: #6b7280;">Toggle Hide Cached</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
-                  <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">2</code>
-                  </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Pre-Release filter</td>
-                </tr>
+
                 <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">3</code>
@@ -2854,16 +2850,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         return;
       }
 
-      // 2: Toggle Pre-Release filter
-      if (e.key === '2') {
-        const checkbox = document.getElementById('vine-filter-preRelease');
-        if (checkbox) {
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event('change'));
-          console.log('[Vine] Toggled Pre-Release filter:', checkbox.checked);
-        }
-        return;
-      }
+
 
       // 3: Toggle Purple filter
       if (e.key === '3') {
