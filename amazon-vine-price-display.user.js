@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.00
+// @version      1.37.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -521,7 +521,8 @@
 
           // If item is displayed but was marked as not seen, update it to seen
           if (!isSeen) {
-            item.dataset.vineSeen = 'true';
+            // Do NOT update dataset.vineSeen to true here, or it will vanish immediately if "Hide Seen" is on.
+            // We only want to update the cache for the NEXT session.
             const asin = item.dataset.vineAsin;
             const price = parseFloat(item.dataset.vinePrice);
 
@@ -599,7 +600,6 @@
             // Calculate visibility (isSeen) based on filters
             // Check if item would be visible
             getColorFilter((filter) => {
-              // Determine if visible based on basic color filter
               // Note: Pre-release logic is checked in applyColorFilter but for caching 'seen' status,
               // we assume if the color logic passes, it's potentially seen.
               // We'll cache it regardless, but mark isSeen accordingly.
@@ -608,8 +608,9 @@
               // Always cache the price, but track if it was seen (visible)
               setCachedPrice(asin, priceData.price, isVisible);
 
-              // Mark dataset for immediate use
-              item.dataset.vineSeen = String(isVisible);
+              // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly), 
+              // even though we cache it as seen for next time.
+              item.dataset.vineSeen = 'false';
             });
 
             const badge = createPriceBadge(priceData.price, false, color);
@@ -677,7 +678,7 @@
 
           fetchPrice(url, asin, (priceData) => {
             if (activeFetches.get(asin) === fetchId) {
-              activeFetches.delete(asin);
+              activeFethes.delete(asin);
               if (priceData) {
                 const color = getPriceColorSync(priceData.price);
 
@@ -691,8 +692,8 @@
                   // Always cache, set seen status based on visibility
                   setCachedPrice(asin, priceData.price, isVisible);
 
-                  // Mark dataset
-                  item.dataset.vineSeen = String(isVisible);
+                  // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly)
+                  item.dataset.vineSeen = 'false';
                 });
 
                 const badge = createPriceBadge(priceData.price, false, color);
