@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.16
+// @version      1.37.17
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -480,19 +480,27 @@
 
   // Helper to check if an item is Pre-Release  
   function isPreReleaseItem(item) {
-    // 0. Check for Amazon's official data attribute (most reliable)
+    // 0. Check innerHTML directly (most reliable for lazy-loaded content)
+    const htmlContent = item.innerHTML || '';
+    if (htmlContent.includes('data-is-pre-release="true"') || htmlContent.includes('vvp-badge-prerelease')) {
+      console.log('[Vine Pre-Release] ✓ Found via innerHTML check');
+      return true;
+    }
+
+    // 1. Check for Amazon's official data attribute (most reliable)
     const input = item.querySelector('input[data-is-pre-release="true"]');
     console.log('[Vine Pre-Release] Check:', {
       foundInput: !!input,
       hasVvpBadge: !!item.querySelector('.vvp-badge-prerelease'),
-      itemClass: item.className
+      itemClass: item.className,
+      hasInnerHTML: htmlContent.length > 0
     });
     if (input) {
       console.log('[Vine Pre-Release] ✓ Found via data attribute');
       return true;
     }
 
-    // 1. Check for definitive Vine class (on item itself or children)
+    // 2. Check for definitive Vine class (on item itself or children)
     const badgeElement = item.querySelector('.vvp-badge-prerelease');
     const hasBadgeClass = item.classList.contains('vvp-badge-prerelease');
     if (hasBadgeClass || badgeElement) {
@@ -1066,7 +1074,13 @@
         colorFilter = newFilter;
         colorFilterLoaded = true;
         console.log('[Vine Filter] Updated filter state:', colorFilter);
-        applyColorFilterToAllItems();
+
+        // For pre-release filter, add a small delay to ensure DOM is populated
+        if (name === 'preRelease') {
+          setTimeout(() => applyColorFilterToAllItems(), 100);
+        } else {
+          applyColorFilterToAllItems();
+        }
       });
 
       checkboxWrapper.appendChild(checkbox);
