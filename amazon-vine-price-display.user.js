@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.08
+// @version      1.37.09
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -168,7 +168,14 @@
       return;
     }
     colorFilterLoaded = true;
-    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
+    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true, preRelease: true });
+
+    // Ensure new keys exist for legacy configs
+    if (typeof colorFilter.preRelease === 'undefined') {
+      colorFilter.preRelease = true;
+      setStorage(CONFIG.COLOR_FILTER_KEY, colorFilter);
+    }
+
     callback(colorFilter);
   }
 
