@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.11
+// @version      1.37.12
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -480,6 +480,7 @@
   function isPreReleaseItem(item) {
     // 0. Check for definitive Vine class (on item itself or children)
     if (item.classList.contains('vvp-badge-prerelease') || item.querySelector('.vvp-badge-prerelease')) {
+      console.log('[Vine Pre-Release] Detected via .vvp-badge-prerelease class');
       return true;
     }
 
@@ -527,6 +528,14 @@
         const isSeen = item.dataset.vineSeen === 'true';
         const isPreRelease = isPreReleaseItem(item);
         let shouldShow = true;
+
+        console.log('[Vine Filter] Item check:', {
+          isPreRelease,
+          filterPreRelease: filter.preRelease,
+          isSeen,
+          shouldHideCached,
+          color
+        });
 
         if (isSeen && shouldHideCached) {
           shouldShow = false;
@@ -1035,11 +1044,13 @@
       labelText.textContent = colorLabel;
 
       checkbox.addEventListener('change', (e) => {
+        console.log(`[Vine Filter] ${name} filter toggled to:`, e.target.checked);
         const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true, preRelease: true });
         newFilter[name] = e.target.checked;
         setStorage(CONFIG.COLOR_FILTER_KEY, newFilter);
         colorFilter = newFilter;
         colorFilterLoaded = true;
+        console.log('[Vine Filter] Updated filter state:', colorFilter);
         applyColorFilterToAllItems();
       });
 
