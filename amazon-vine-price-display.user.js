@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.15
+// @version      1.37.16
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -482,7 +482,13 @@
   function isPreReleaseItem(item) {
     // 0. Check for Amazon's official data attribute (most reliable)
     const input = item.querySelector('input[data-is-pre-release="true"]');
+    console.log('[Vine Pre-Release] Check:', {
+      foundInput: !!input,
+      hasVvpBadge: !!item.querySelector('.vvp-badge-prerelease'),
+      itemClass: item.className
+    });
     if (input) {
+      console.log('[Vine Pre-Release] ✓ Found via data attribute');
       return true;
     }
 
