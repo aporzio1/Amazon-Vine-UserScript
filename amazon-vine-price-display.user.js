@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.02
+// @version      1.37.03
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -437,7 +437,7 @@
     }
   }
 
-  function createPriceBadge(price, isCached, color) {
+  function createPriceBadge(price, isCached, isSeen, color) {
     const badge = document.createElement('div');
     badge.className = `vine-price-badge vine-price-${color}`;
     badge.setAttribute('aria-label', `Product price: $${price.toFixed(2)}`);
@@ -455,6 +455,15 @@
       cacheIndicator.textContent = '📦';
       cacheIndicator.title = 'Cached price';
       badge.appendChild(cacheIndicator);
+    }
+
+    if (isSeen) {
+      const seenIndicator = document.createElement('span');
+      seenIndicator.className = 'vine-seen-indicator';
+      seenIndicator.textContent = '👁️';
+      seenIndicator.title = 'Previously seen';
+      seenIndicator.style.marginLeft = '4px';
+      badge.appendChild(seenIndicator);
     }
 
     return badge;
@@ -581,7 +590,7 @@
 
       getHideCached((shouldHide) => {
         const color = getPriceColorSync(cached.price);
-        const badge = createPriceBadge(cached.price, true, color);
+        const badge = createPriceBadge(cached.price, true, isSeen, color);
         item.appendChild(badge);
         applyColorFilter(item, color);
       });
@@ -614,7 +623,7 @@
               item.dataset.vineSeen = 'false';
             });
 
-            const badge = createPriceBadge(priceData.price, false, color);
+            const badge = createPriceBadge(priceData.price, false, false, color);
             item.appendChild(badge);
             applyColorFilter(item, color);
           }
@@ -665,7 +674,7 @@
             item.dataset.vineSeen = String(isSeen);
 
             const color = getPriceColorSync(cached.price);
-            const badge = createPriceBadge(cached.price, true, color);
+            const badge = createPriceBadge(cached.price, true, isSeen, color);
             item.appendChild(badge);
             applyColorFilter(item, color);
           } else {
@@ -697,7 +706,7 @@
                   item.dataset.vineSeen = 'false';
                 });
 
-                const badge = createPriceBadge(priceData.price, false, color);
+                const badge = createPriceBadge(priceData.price, false, false, color);
                 item.appendChild(badge);
                 applyColorFilter(item, color);
               }
