@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.13
+// @version      1.37.14
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -480,6 +480,15 @@
 
   // Helper to check if an item is Pre-Release
   function isPreReleaseItem(item) {
+    // Debug: Show what element we're checking
+    console.log('[Vine Pre-Release] Checking element:', {
+      tagName: item.tagName,
+      className: item.className,
+      hasVvpItemTileClass: item.classList.contains('vvp-item-tile'),
+      dataAttrs: Array.from(item.attributes).filter(a => a.name.startsWith('data-')).map(a => `${a.name}=${a.value.substring(0, 50)}`),
+      firstChild: item.firstElementChild ? item.firstElementChild.className : 'none'
+    });
+
     // Debug: Log what we're checking
     const badgeElement = item.querySelector('.vvp-badge-prerelease');
     const hasBadgeClass = item.classList.contains('vvp-badge-prerelease');
