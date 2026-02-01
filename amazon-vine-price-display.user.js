@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.12
+// @version      1.37.13
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -24,6 +24,8 @@
 
 (function () {
   'use strict';
+
+  console.log('[Vine Price Display] Script loaded - Version 1.37.12');
 
   // Configuration constants
   const CONFIG = {
@@ -478,8 +480,29 @@
 
   // Helper to check if an item is Pre-Release
   function isPreReleaseItem(item) {
+    // Debug: Log what we're checking
+    const badgeElement = item.querySelector('.vvp-badge-prerelease');
+    const hasBadgeClass = item.classList.contains('vvp-badge-prerelease');
+
+    if (badgeElement || hasBadgeClass) {
+      console.log('[Vine Pre-Release] FOUND pre-release badge!', {
+        badgeElement,
+        hasBadgeClass,
+        itemHTML: item.outerHTML.substring(0, 500)
+      });
+    }
+
+    // Also check for common badge containers
+    const badgeContainer = item.querySelector('.vvp-item-badges');
+    if (badgeContainer) {
+      console.log('[Vine Pre-Release] Badge container found, children:', {
+        innerHTML: badgeContainer.innerHTML.substring(0, 300),
+        childClasses: Array.from(badgeContainer.children).map(c => c.className)
+      });
+    }
+
     // 0. Check for definitive Vine class (on item itself or children)
-    if (item.classList.contains('vvp-badge-prerelease') || item.querySelector('.vvp-badge-prerelease')) {
+    if (hasBadgeClass || badgeElement) {
       console.log('[Vine Pre-Release] Detected via .vvp-badge-prerelease class');
       return true;
     }
