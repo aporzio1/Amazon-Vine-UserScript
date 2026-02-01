@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.01
+// @version      1.37.02
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -17,6 +17,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_info
 // @inject-into  content
 // @run-at       document-idle
 // ==/UserScript==
@@ -678,7 +679,7 @@
 
           fetchPrice(url, asin, (priceData) => {
             if (activeFetches.get(asin) === fetchId) {
-              activeFethes.delete(asin);
+              activeFetches.delete(asin);
               if (priceData) {
                 const color = getPriceColorSync(priceData.price);
 
@@ -1827,7 +1828,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       dialog.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-          <h2 style="margin: 0; font-size: 24px; color: #1f2937;">Vine Tools</h2>
+          <h2 style="margin: 0; font-size: 24px; color: #1f2937;">Vine Tools <span style="font-size: 0.6em; color: #6b7280; font-weight: normal;">(v${GM_info.script.version})</span></h2>
           <a href="https://www.buymeacoffee.com/aporzio" target="_blank" style="
             display: flex !important;
             align-items: center !important;
