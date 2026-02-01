@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.36.05
+// @version      1.37.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -311,10 +311,11 @@
     }
   });
 
-  function setCachedPrice(asin, price) {
+  function setCachedPrice(asin, price, isSeen = true) {
     // Add to pending updates
     pendingCacheUpdates.set(asin, {
       price: price,
+      isSeen: isSeen,
       timestamp: Date.now()
     });
 
@@ -493,27 +494,45 @@
   function applyColorFilter(item, color) {
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
-        const isCached = item.dataset.vineIsCached === 'true';
+        // Use vineSeen to determine hiding based on "Seen" status
+        // Default to true for legacy items if attribute missing, though it should be set
+        const isSeen = item.dataset.vineSeen === 'true';
         const isPreRelease = isPreReleaseItem(item);
+        let shouldShow = true;
 
-        if (isCached && shouldHideCached) {
-          item.style.display = 'none';
-          item.dataset.vineHidden = 'true';
+        if (isSeen && shouldHideCached) {
+          shouldShow = false;
         } else if (isPreRelease) {
           // Pre-release items are controlled by their own filter, regardless of price color
           if (filter.preRelease === false) {
-            item.style.display = 'none';
-            item.dataset.vineHidden = 'true';
+            shouldShow = false;
           } else {
-            item.style.display = '';
-            item.dataset.vineHidden = 'false';
+            shouldShow = true;
           }
         } else if (!filter[color]) {
-          item.style.display = 'none';
-          item.dataset.vineHidden = 'true';
+          shouldShow = false;
         } else {
+          shouldShow = true;
+        }
+
+        if (shouldShow) {
           item.style.display = '';
           item.dataset.vineHidden = 'false';
+
+          // If item is displayed but was marked as not seen, update it to seen
+          if (!isSeen) {
+            item.dataset.vineSeen = 'true';
+            const asin = item.dataset.vineAsin;
+            const price = parseFloat(item.dataset.vinePrice);
+
+            if (asin && !isNaN(price)) {
+              // Update cache to mark as seen
+              setCachedPrice(asin, price, true);
+            }
+          }
+        } else {
+          item.style.display = 'none';
+          item.dataset.vineHidden = 'true';
         }
 
         // Trigger auto-advance check whenever/if visibility changes
@@ -546,10 +565,18 @@
       item.style.position = 'relative';
     }
 
+    // Store ASIN on item for later access (e.g. in applyColorFilter updates)
+    item.dataset.vineAsin = asin;
+
     const cached = cachedData && cachedData.hasOwnProperty(asin) ? cachedData[asin] : null;
 
     if (cached) {
       item.dataset.vineIsCached = 'true';
+      item.dataset.vinePrice = cached.price;
+      // Default to true for legacy cache entries without isSeen property
+      const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
+      item.dataset.vineSeen = String(isSeen);
+
       getHideCached((shouldHide) => {
         const color = getPriceColorSync(cached.price);
         const badge = createPriceBadge(cached.price, true, color);
@@ -566,11 +593,23 @@
           if (priceData) {
             const color = getPriceColorSync(priceData.price);
 
-            // Only cache if the item is visible under current filters
+            // Store price on item
+            item.dataset.vinePrice = priceData.price;
+
+            // Calculate visibility (isSeen) based on filters
+            // Check if item would be visible
             getColorFilter((filter) => {
-              if (filter[color]) {
-                setCachedPrice(asin, priceData.price);
-              }
+              // Determine if visible based on basic color filter
+              // Note: Pre-release logic is checked in applyColorFilter but for caching 'seen' status,
+              // we assume if the color logic passes, it's potentially seen.
+              // We'll cache it regardless, but mark isSeen accordingly.
+              const isVisible = filter[color];
+
+              // Always cache the price, but track if it was seen (visible)
+              setCachedPrice(asin, priceData.price, isVisible);
+
+              // Mark dataset for immediate use
+              item.dataset.vineSeen = String(isVisible);
             });
 
             const badge = createPriceBadge(priceData.price, false, color);
@@ -590,6 +629,8 @@
       if (!link) return null;
       const asin = extractASIN(link.href);
       if (asin) {
+        // Store ASIN on item immediately for consistency
+        item.dataset.vineAsin = asin;
         return { item, asin, url: link.href };
       }
       return null;
@@ -616,6 +657,11 @@
           const cached = cachedResults[asin];
           if (cached && cached.price !== undefined && cached.price !== null) {
             item.dataset.vineIsCached = 'true';
+            item.dataset.vinePrice = cached.price;
+            // Default to true for legacy cache entries without isSeen property
+            const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
+            item.dataset.vineSeen = String(isSeen);
+
             const color = getPriceColorSync(cached.price);
             const badge = createPriceBadge(cached.price, true, color);
             item.appendChild(badge);
@@ -635,11 +681,18 @@
               if (priceData) {
                 const color = getPriceColorSync(priceData.price);
 
-                // Only cache if the item is visible under current filters
+                // Store price
+                item.dataset.vinePrice = priceData.price;
+
+                // Calculate visibility (isSeen) based on filters
                 getColorFilter((filter) => {
-                  if (filter[color]) {
-                    setCachedPrice(asin, priceData.price);
-                  }
+                  const isVisible = filter[color];
+
+                  // Always cache, set seen status based on visibility
+                  setCachedPrice(asin, priceData.price, isVisible);
+
+                  // Mark dataset
+                  item.dataset.vineSeen = String(isVisible);
                 });
 
                 const badge = createPriceBadge(priceData.price, false, color);
@@ -882,7 +935,7 @@
     `;
 
     const hideCachedLabel = document.createElement('span');
-    hideCachedLabel.textContent = 'Hide Cached 📦';
+    hideCachedLabel.textContent = 'Hide Seen 📦';
 
     hideCachedCheckbox.addEventListener('change', (e) => {
       hideCached = e.target.checked;
@@ -966,32 +1019,16 @@
 
   // Apply color filter to all items on the page
   function applyColorFilterToAllItems() {
-    getColorFilter((filter) => {
-      getHideCached((shouldHideCached) => {
-        const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
-        allItems.forEach(item => {
-          const badge = item.querySelector('.vine-price-badge');
-          if (badge) {
-            const color = badge.getAttribute('data-price-color');
-            const isCached = item.dataset.vineIsCached === 'true' || !!item.querySelector('.vine-cache-indicator');
-
-            if (color) {
-              if (isCached && shouldHideCached) {
-                item.style.display = 'none';
-                item.dataset.vineHidden = 'true';
-              } else if (!filter[color]) {
-                item.style.display = 'none';
-                item.dataset.vineHidden = 'true';
-              } else {
-                item.style.display = '';
-                item.dataset.vineHidden = 'false';
-              }
-            }
-          }
-        });
-        // Check for auto-advance after re-filtering
-        checkAndAutoAdvance();
-      });
+    // Re-use the single item logic which handles checks, 'seen' status updates, and auto-advance
+    const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
+    allItems.forEach(item => {
+      const badge = item.querySelector('.vine-price-badge');
+      if (badge) {
+        const color = badge.getAttribute('data-price-color');
+        if (color) {
+          applyColorFilter(item, color);
+        }
+      }
     });
   }
 
