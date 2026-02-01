@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.03
+// @version      1.37.04
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -473,7 +473,11 @@
   function isPreReleaseItem(item) {
     // 1. Check text content
     const text = (item.textContent || item.innerText || '').toLowerCase();
-    if (text.includes('pre-release') || text.includes('available for pre-order')) {
+    if (text.includes('pre-release') ||
+      text.includes('available for pre-order') ||
+      text.includes('pre-order') ||
+      text.includes('presale') ||
+      text.includes('will be released on')) {
       // console.log('[Vine] Found Pre-Release item via text:', item); // Uncomment for verbose debugging
       return true;
     }
