@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.17
+// @version      1.38.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -25,7 +25,7 @@
 (function () {
   'use strict';
 
-  console.log('[Vine Price Display] Script loaded - Version 1.37.12');
+
 
   // Configuration constants
   const CONFIG = {
@@ -170,11 +170,11 @@
       return;
     }
     colorFilterLoaded = true;
-    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true, preRelease: true });
+    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
 
-    // Ensure new keys exist for legacy configs
-    if (typeof colorFilter.preRelease === 'undefined') {
-      colorFilter.preRelease = true;
+    // Clean up legacy preRelease key if it exists
+    if (typeof colorFilter.preRelease !== 'undefined') {
+      delete colorFilter.preRelease;
       setStorage(CONFIG.COLOR_FILTER_KEY, colorFilter);
     }
 
@@ -478,7 +478,8 @@
     return badge;
   }
 
-  // Helper to check if an item is Pre-Release  
+  // Helper to check if an item is Pre-Release
+  // Note: Pre-release filtering UI removed, but detection still used to mark items as "seen" immediately
   function isPreReleaseItem(item) {
     // 0. Check innerHTML directly (most reliable for lazy-loaded content)
     const htmlContent = item.innerHTML || '';
@@ -546,29 +547,11 @@
   function applyColorFilter(item, color) {
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
-        // Use vineSeen to determine hiding based on "Seen" status
-        // Default to true for legacy items if attribute missing, though it should be set
         const isSeen = item.dataset.vineSeen === 'true';
-        const isPreRelease = isPreReleaseItem(item);
         let shouldShow = true;
-
-        console.log('[Vine Filter] Item check:', {
-          isPreRelease,
-          filterPreRelease: filter.preRelease,
-          isSeen,
-          shouldHideCached,
-          color
-        });
 
         if (isSeen && shouldHideCached) {
           shouldShow = false;
-        } else if (isPreRelease) {
-          // Pre-release items are controlled by their own filter, regardless of price color
-          if (filter.preRelease === false) {
-            shouldShow = false;
-          } else {
-            shouldShow = true;
-          }
         } else if (!filter[color]) {
           shouldShow = false;
         } else {
@@ -684,9 +667,10 @@
             item.appendChild(badge);
             applyColorFilter(item, color);
           } else if (isPreReleaseItem(item)) {
-            // If price fetch failed but it IS a pre-release item, we still need to apply filters
-            // Pre-release items logic in applyColorFilter takes precedence over color
-            applyColorFilter(item, 'gray');
+            // Pre-release items: mark as seen immediately to avoid blocking auto-advance
+            item.dataset.vineSeen = 'true';
+            item.dataset.vinePrice = '0';
+            setCachedPrice(asin, 0, true);
           }
         }
       });
@@ -1031,9 +1015,8 @@
 
     filterContainer.appendChild(hideCachedWrapper);
 
-    // Create checkboxes for each color
+    // Create checkboxes for each color (removed Pre-Release)
     const colors = [
-      { name: 'preRelease', label: '📅 Pre-Release', color: '#c08309' }, // Brown/Gold like the badge
       { name: 'purple', label: '🟣 Purple ($0)', color: '#8b5cf6' },
       { name: 'green', label: '🟢 Green ($90+)', color: '#10b981' },
       { name: 'yellow', label: '🟡 Yellow', color: '#fbbf24' },
@@ -1067,20 +1050,12 @@
       labelText.textContent = colorLabel;
 
       checkbox.addEventListener('change', (e) => {
-        console.log(`[Vine Filter] ${name} filter toggled to:`, e.target.checked);
-        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true, preRelease: true });
+        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
         newFilter[name] = e.target.checked;
         setStorage(CONFIG.COLOR_FILTER_KEY, newFilter);
         colorFilter = newFilter;
         colorFilterLoaded = true;
-        console.log('[Vine Filter] Updated filter state:', colorFilter);
-
-        // For pre-release filter, add a small delay to ensure DOM is populated
-        if (name === 'preRelease') {
-          setTimeout(() => applyColorFilterToAllItems(), 100);
-        } else {
-          applyColorFilterToAllItems();
-        }
+        applyColorFilterToAllItems();
       });
 
       checkboxWrapper.appendChild(checkbox);
