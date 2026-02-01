@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.37.09
+// @version      1.37.11
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -478,8 +478,8 @@
 
   // Helper to check if an item is Pre-Release
   function isPreReleaseItem(item) {
-    // 0. Check for definitive Vine class
-    if (item.querySelector('.vvp-badge-prerelease')) {
+    // 0. Check for definitive Vine class (on item itself or children)
+    if (item.classList.contains('vvp-badge-prerelease') || item.querySelector('.vvp-badge-prerelease')) {
       return true;
     }
 
@@ -579,8 +579,15 @@
     }
     item.dataset.vinePriceProcessed = 'true';
 
+    // Check if pre-release item first - these might not have standard links/prices
+    const isPreRelease = isPreReleaseItem(item);
+
     const link = item.querySelector('a[href*="/dp/"]');
     if (!link) {
+      // No product link - might be pre-release without a listing yet
+      if (isPreRelease) {
+        applyColorFilter(item, 'gray');
+      }
       return;
     }
 
@@ -1064,6 +1071,10 @@
         if (color) {
           applyColorFilter(item, color);
         }
+      } else if (isPreReleaseItem(item)) {
+        // Handle pre-release items that didn't get a price badge (failed fetch)
+        // We pass 'gray' as a dummy color, but applyColorFilter prioritizes isPreRelease check anyway
+        applyColorFilter(item, 'gray');
       }
     });
   }
