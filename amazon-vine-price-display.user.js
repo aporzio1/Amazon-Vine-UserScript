@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.38.00
+// @version      1.39.00
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1585,49 +1585,86 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
       // 2. Fetch Remote Cache
       const gistData = await githubRequest(`gists/${gistId}`);
       let remoteCache = {};
-      if (gistData.files && gistData.files[gistFileName]) {
-        try {
-          remoteCache = JSON.parse(gistData.files[gistFileName].content);
-        } catch (e) {
-          console.error('Error parsing remote cache:', e);
-          remoteCache = {};
+      const file = gistData.files && gistData.files[gistFileName];
+
+      if (file) {
+        if (file.truncated) {
+          console.log('[Vine Sync] Remote file truncated, fetching raw content...');
+          const rawContent = await new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+              method: 'GET',
+              url: file.raw_url,
+              onload: (r) => resolve(r.responseText),
+              onerror: reject
+            });
+          });
+          remoteCache = JSON.parse(rawContent);
+        } else {
+          remoteCache = file.content ? JSON.parse(file.content) : {};
         }
       }
 
-      // 3. Merge Caches (Union of keys, prefer newer timestamp)
+      // 3. Merge Caches (Smart Merge)
       return new Promise((resolve) => {
         getCache((localCache) => {
-          const mergedCache = { ...localCache };
-          let hasChanges = false;
           const now = Date.now();
+          const mergedCache = { ...remoteCache }; // Start with remote as base
+          let remoteNeedsUpdate = false;
+          let localNeedsUpdate = false;
 
-          // Merge remote into local
-          for (const [asin, entry] of Object.entries(remoteCache)) {
-            // Check expiry for remote items too
-            if (now - (entry.timestamp || 0) > CONFIG.CACHE_DURATION) continue;
+          // Process local items into the merge
+          for (const [asin, localEntry] of Object.entries(localCache)) {
+            // Skip if local entry is expired
+            if (now - (localEntry.timestamp || 0) > CONFIG.CACHE_DURATION) continue;
 
-            if (!mergedCache[asin] || (entry.timestamp > mergedCache[asin].timestamp)) {
-              mergedCache[asin] = entry;
-              hasChanges = true;
+            const remoteEntry = mergedCache[asin];
+
+            if (!remoteEntry) {
+              // Local has it, remote doesn't -> Add to merge
+              mergedCache[asin] = localEntry;
+              remoteNeedsUpdate = true;
+            } else if ((localEntry.timestamp || 0) > (remoteEntry.timestamp || 0)) {
+              // Local is newer -> Overwrite remote in merge
+              mergedCache[asin] = localEntry;
+              remoteNeedsUpdate = true;
+            } else if ((remoteEntry.timestamp || 0) > (localEntry.timestamp || 0)) {
+              // Remote is newer -> We need to update local
+              localNeedsUpdate = true;
             }
           }
 
-          // Check if we need to push updates back to remote
-          // (i.e. if local had newer items not in remote, or if we just merged new stuff)
-          // For simplicity, we always push back the fully merged state to ensure consistency
+          // Check if we essentially just downloaded new stuff from remote
+          if (Object.keys(mergedCache).length !== Object.keys(localCache).length) {
+            localNeedsUpdate = true;
+          }
 
-          setCache(mergedCache, async () => {
-            // 4. Update Remote Gist
-            await githubRequest(`gists/${gistId}`, 'PATCH', {
-              files: {
-                [gistFileName]: {
-                  content: JSON.stringify(mergedCache)
+          // 4. Update Remote Gist (Only if needed)
+          const finalizeSync = async () => {
+            if (remoteNeedsUpdate) {
+              console.log('[Vine Sync] Pushing updates to GitHub...');
+              await githubRequest(`gists/${gistId}`, 'PATCH', {
+                files: {
+                  [gistFileName]: {
+                    content: JSON.stringify(mergedCache)
+                  }
                 }
-              }
-            });
+              });
+            } else {
+              console.log('[Vine Sync] Remote is up to date.');
+            }
 
-            setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
-            resolve({ success: true, count: Object.keys(mergedCache).length });
+            // 5. Update Local Storage
+            setCache(mergedCache, () => {
+              setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
+              resolve({ success: true, count: Object.keys(mergedCache).length });
+            });
+          };
+
+          finalizeSync().catch(err => {
+            console.error('Sync finalize failed:', err);
+            // Even if remote push fails, we should save what we pulled locally
+            setCache(mergedCache);
+            resolve({ success: false, error: err });
           });
         });
       });
