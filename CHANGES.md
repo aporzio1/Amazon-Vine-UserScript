@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.39.01 - AI Review Update
+
+- **Enhancement**: Updated AI Review Generator prompts to enforce length constraints:
+  - **Title**: One sentence, clear and concise.
+  - **Body**: 5-8 sentences.
+
 ## Version 1.30.00 - Mobile Browser Support
 
 - **Mobile Compatibility**: Added comprehensive mobile browser support for

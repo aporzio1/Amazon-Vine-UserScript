@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.39.00
+// @version      1.39.01
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1135,7 +1135,7 @@ AVOID these AI tells:
 - Perfect grammar with no personality
 - Generic statements that could apply to any product
 
-Format: Title on first line, then review body. 2 paragraphs or less. Do NOT mention the star rating number.`;
+Format: Title on first line (one sentence, clear and concise). Body on new line (5-8 sentences). Do NOT mention the star rating number.`;
 
     const userPrompt = `Write a review for this product as if you personally tested it.
 
