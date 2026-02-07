@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.39.01
+// @version      1.40.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -34,6 +34,7 @@
     HIDE_CACHED_KEY: 'vine_hide_cached',
     AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
+    SAVED_SEARCHES_TIMESTAMP_KEY: 'vine_saved_searches_timestamp',
     COLOR_FILTER_KEY: 'vine_color_filter',
     OPENAI_API_KEY: 'vine_openai_api_key',
     GITHUB_TOKEN_KEY: 'vine_github_token',
@@ -1718,13 +1719,17 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         if (existingGist) {
           gistId = existingGist.id;
         } else {
-          // Create new private gist
+          // Create new private gist with timestamp wrapper
+          const initialData = {
+            timestamp: Date.now(),
+            searches: []
+          };
           const newGist = await githubRequest('gists', 'POST', {
             description: 'Amazon Vine Saved Searches (Synced)',
             public: false,
             files: {
               [gistFileName]: {
-                content: JSON.stringify([])
+                content: JSON.stringify(initialData)
               }
             }
           });
@@ -1735,46 +1740,90 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
       // 2. Fetch Remote Searches
       const gistData = await githubRequest(`gists/${gistId}`);
-      let remoteSearches = [];
+      let remoteData = { timestamp: 0, searches: [] };
       if (gistData.files && gistData.files[gistFileName]) {
         try {
-          remoteSearches = JSON.parse(gistData.files[gistFileName].content);
+          const parsedContent = JSON.parse(gistData.files[gistFileName].content);
+          // Handle old format (array) vs new format (object with timestamp)
+          if (Array.isArray(parsedContent)) {
+            remoteData = { timestamp: 0, searches: parsedContent };
+          } else {
+            remoteData = parsedContent;
+          }
         } catch (e) {
           console.error('Error parsing remote searches:', e);
-          remoteSearches = [];
+          remoteData = { timestamp: 0, searches: [] };
         }
       }
 
-      // 3. Merge Searches - Prioritize local order, add new remote searches at end
+      // 3. Get local searches and timestamp
       const localSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-      const localTerms = new Set(localSearches.map(s => s.term.toLowerCase()));
+      const localTimestamp = getStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, 0);
 
-      // Start with local searches (preserving order)
-      const mergedSearches = [...localSearches];
+      // 4. Determine which version is newer and merge
+      let finalSearches = [];
+      let shouldUpdateLocal = false;
+      let shouldUpdateRemote = false;
 
-      // Add any remote searches that aren't in local
-      remoteSearches.forEach(search => {
-        const key = search.term.toLowerCase();
-        if (!localTerms.has(key)) {
-          mergedSearches.push(search);
-        }
-      });
+      if (localTimestamp > remoteData.timestamp) {
+        // Local is newer - use local and push to remote
+        console.log('[Vine Searches Sync] Local is newer, pushing to remote');
+        finalSearches = [...localSearches];
+        shouldUpdateRemote = true;
+      } else if (remoteData.timestamp > localTimestamp) {
+        // Remote is newer - use remote and pull to local
+        console.log('[Vine Searches Sync] Remote is newer, pulling to local');
+        finalSearches = [...remoteData.searches];
+        shouldUpdateLocal = true;
+      } else {
+        // Same timestamp - merge by adding new items from each side
+        console.log('[Vine Searches Sync] Same timestamp, smart merging');
+        const localTerms = new Set(localSearches.map(s => s.term.toLowerCase()));
+        const remoteTerms = new Set(remoteData.searches.map(s => s.term.toLowerCase()));
 
-      // Only update local storage if we added new searches from remote
-      if (mergedSearches.length > localSearches.length) {
-        setStorage(CONFIG.SAVED_SEARCHES_KEY, mergedSearches);
+        // Start with local searches (preserving order)
+        finalSearches = [...localSearches];
+
+        // Add any remote searches that aren't in local
+        remoteData.searches.forEach(search => {
+          const key = search.term.toLowerCase();
+          if (!localTerms.has(key)) {
+            finalSearches.push(search);
+            shouldUpdateLocal = true;
+          }
+        });
+
+        // Check if local has items not in remote
+        localSearches.forEach(search => {
+          const key = search.term.toLowerCase();
+          if (!remoteTerms.has(key)) {
+            shouldUpdateRemote = true;
+          }
+        });
       }
 
-      // 4. Update Remote Gist with merged list
-      await githubRequest(`gists/${gistId}`, 'PATCH', {
-        files: {
-          [gistFileName]: {
-            content: JSON.stringify(mergedSearches)
-          }
-        }
-      });
+      // 5. Update local storage if needed
+      if (shouldUpdateLocal) {
+        setStorage(CONFIG.SAVED_SEARCHES_KEY, finalSearches);
+        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, remoteData.timestamp);
+      }
 
-      return { success: true, count: mergedSearches.length };
+      // 6. Update Remote Gist if needed
+      if (shouldUpdateRemote) {
+        const updateData = {
+          timestamp: localTimestamp || Date.now(),
+          searches: finalSearches
+        };
+        await githubRequest(`gists/${gistId}`, 'PATCH', {
+          files: {
+            [gistFileName]: {
+              content: JSON.stringify(updateData)
+            }
+          }
+        });
+      }
+
+      return { success: true, count: finalSearches.length };
 
     } catch (error) {
       console.error('Searches sync failed:', error);
@@ -2520,6 +2569,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
               if (newName && newName.trim()) {
                 searches[index].name = newName.trim();
                 setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+                setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
                 renderSearches();
                 showStatus('Search renamed!');
                 // Sync in background
@@ -2536,6 +2586,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
             if (confirm(`Delete search "${searches[index].name}"?`)) {
               searches.splice(index, 1);
               setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
               renderSearches();
               showStatus('Search deleted!');
               // Sync in background
@@ -2553,6 +2604,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
               // Swap with previous item
               [searches[index - 1], searches[index]] = [searches[index], searches[index - 1]];
               setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
               renderSearches();
               showStatus('Search moved up!');
               // Sync in background
@@ -2569,6 +2621,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
               // Swap with next item
               [searches[index], searches[index + 1]] = [searches[index + 1], searches[index]];
               setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
               renderSearches();
               showStatus('Search moved down!');
               // Sync in background
@@ -2589,6 +2642,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
         searches.push({ name: term, term: term });
         setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
 
         newSearchTerm.value = '';
         renderSearches();
