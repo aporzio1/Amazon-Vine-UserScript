@@ -1,5 +1,20 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.40.1 - Code Quality Fixes
+
+- **Fix**: Removed duplicate `autoAdvance` variable assignment on settings save.
+- **Fix**: Improved price regex to prevent matching bare decimals (e.g. `"19."`) — now requires at least one digit after the decimal point.
+- **Security**: Added `escapeHtml` utility and applied it to saved search name rendering to prevent XSS via malicious search names.
+- **Fix**: Clipboard copy failures in the AI Review Generator now log the actual error to the console instead of silently swallowing it.
+- **UX**: Settings modal now remembers and restores the last active tab across opens instead of always defaulting to "Searches".
+- **Performance**: Replaced five separate `forEach` event listener loops on the search list with a single delegated `click` listener, reducing DOM overhead on every render.
+
+## Version 1.40.0 - Saved Search Sync & Gist Improvements
+
+- **Feature**: Implemented timestamp-based synchronization for saved searches to resolve conflicts between local and remote Gist storage.
+- **Enhancement**: Enhanced Gist cache synchronization with truncated file handling and optimized merge logic.
+- **Removed**: Pre-release item filtering and pre-release filter hotkey.
+
 ## Version 1.39.01 - AI Review Update
 
 - **Enhancement**: Updated AI Review Generator prompts to enforce length constraints:
