@@ -43,6 +43,7 @@
     LAST_SYNC_KEY: 'vine_last_sync',
     SHIPPING_ADDRESS_KEY: 'vine_shipping_address',
     ENABLE_QUICK_BUY_KEY: 'vine_enable_quick_buy',
+    LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_CACHE_SIZE: 50000, // Optimized for high capacity
     MAX_RETRIES: 3,
@@ -118,6 +119,12 @@
     } catch (e) {
       console.error(`Error writing ${key}:`, e);
     }
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   // Cache management
@@ -359,7 +366,7 @@
       const element = doc.querySelector(selector);
       if (element) {
         const priceText = element.textContent.trim();
-        const priceMatch = priceText.match(/\$?([\d,]+\.?\d*)/);
+        const priceMatch = priceText.match(/\$?([\d,]+(?:\.\d{1,2})?)/);
         if (priceMatch) {
           const price = parseFloat(priceMatch[1].replace(/,/g, ''));
           if (!isNaN(price) && price >= 0) {
@@ -1507,6 +1514,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           copyTitleBtn.textContent = originalText;
         }, 2000);
       }).catch(err => {
+        console.error('Failed to copy title:', err);
         showStatus('Failed to copy title', true);
       });
     });
@@ -1520,6 +1528,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           copyBodyBtn.textContent = originalText;
         }, 2000);
       }).catch(err => {
+        console.error('Failed to copy body:', err);
         showStatus('Failed to copy body', true);
       });
     });
@@ -2344,7 +2353,6 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
 
         cachedThresholds = newThresholds;
         autoAdvance = autoAdvanceCheckbox.checked;
-        autoAdvance = autoAdvanceCheckbox.checked;
         autoAdvanceLoaded = true;
 
         // Update page
@@ -2419,13 +2427,12 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
         }
       }
 
-      tabPrice.addEventListener('click', () => switchTab('price'));
-      tabSearches.addEventListener('click', () => switchTab('searches'));
-      tabSync.addEventListener('click', () => switchTab('sync'));
-      tabShortcuts.addEventListener('click', () => switchTab('shortcuts'));
+      tabPrice.addEventListener('click', () => { switchTab('price'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'price'); });
+      tabSearches.addEventListener('click', () => { switchTab('searches'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'searches'); });
+      tabSync.addEventListener('click', () => { switchTab('sync'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'sync'); });
+      tabShortcuts.addEventListener('click', () => { switchTab('shortcuts'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'shortcuts'); });
 
-      // Default to searches if opened, or price if that was last active (simplified for now)
-      switchTab('searches');
+      switchTab(getStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'searches'));
 
       // Helper to sync searches in the background
       async function syncSearchesInBackground() {
@@ -2525,7 +2532,7 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
               font-weight: 600;
               cursor: pointer;
               text-align: left;
-            ">${search.name}</button>
+            ">${escapeHtml(search.name)}</button>
             <button data-search-index="${index}" class="search-edit-btn" style="
               padding: 8px 12px;
               background: #f59e0b;
@@ -2547,89 +2554,62 @@ This should be a ${sentiment} review. Write naturally - like you're texting a fr
           </div>
         `).join('');
 
-        // Add event listeners
-        searchesList.querySelectorAll('.search-go-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            const index = parseInt(e.target.dataset.searchIndex);
-            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-            const search = searches[index];
-            if (search) {
-              window.location.href = `https://www.amazon.com/vine/vine-items?search=${encodeURIComponent(search.term)}`;
-            }
-          });
-        });
-
-        searchesList.querySelectorAll('.search-edit-btn').forEach(btn => {
-          btn.addEventListener('click', async (e) => {
-            const index = parseInt(e.target.dataset.searchIndex);
-            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-            const search = searches[index];
-            if (search) {
-              const newName = prompt('Enter new name for this search:', search.name);
-              if (newName && newName.trim()) {
-                searches[index].name = newName.trim();
-                setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-                setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-                renderSearches();
-                showStatus('Search renamed!');
-                // Sync in background
-                syncSearchesInBackground();
-              }
-            }
-          });
-        });
-
-        searchesList.querySelectorAll('.search-delete-btn').forEach(btn => {
-          btn.addEventListener('click', async (e) => {
-            const index = parseInt(e.target.dataset.searchIndex);
-            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-            if (confirm(`Delete search "${searches[index].name}"?`)) {
-              searches.splice(index, 1);
-              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-              renderSearches();
-              showStatus('Search deleted!');
-              // Sync in background
-              syncSearchesInBackground();
-            }
-          });
-        });
-
-        // Move up/down buttons
-        searchesList.querySelectorAll('.search-move-up-btn').forEach(btn => {
-          btn.addEventListener('click', async (e) => {
-            const index = parseInt(e.target.dataset.searchIndex);
-            if (index > 0) {
-              const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-              // Swap with previous item
-              [searches[index - 1], searches[index]] = [searches[index], searches[index - 1]];
-              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-              renderSearches();
-              showStatus('Search moved up!');
-              // Sync in background
-              syncSearchesInBackground();
-            }
-          });
-        });
-
-        searchesList.querySelectorAll('.search-move-down-btn').forEach(btn => {
-          btn.addEventListener('click', async (e) => {
-            const index = parseInt(e.target.dataset.searchIndex);
-            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-            if (index < searches.length - 1) {
-              // Swap with next item
-              [searches[index], searches[index + 1]] = [searches[index + 1], searches[index]];
-              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-              renderSearches();
-              showStatus('Search moved down!');
-              // Sync in background
-              syncSearchesInBackground();
-            }
-          });
-        });
       }
+
+      // Single delegated listener for all search list actions
+      searchesList.addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-search-index]');
+        if (!btn) return;
+        const index = parseInt(btn.dataset.searchIndex);
+        const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+
+        if (btn.classList.contains('search-go-btn')) {
+          const search = searches[index];
+          if (search) {
+            window.location.href = `https://www.amazon.com/vine/vine-items?search=${encodeURIComponent(search.term)}`;
+          }
+        } else if (btn.classList.contains('search-edit-btn')) {
+          const search = searches[index];
+          if (search) {
+            const newName = prompt('Enter new name for this search:', search.name);
+            if (newName && newName.trim()) {
+              searches[index].name = newName.trim();
+              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
+              renderSearches();
+              showStatus('Search renamed!');
+              syncSearchesInBackground();
+            }
+          }
+        } else if (btn.classList.contains('search-delete-btn')) {
+          if (confirm(`Delete search "${searches[index].name}"?`)) {
+            searches.splice(index, 1);
+            setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+            setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
+            renderSearches();
+            showStatus('Search deleted!');
+            syncSearchesInBackground();
+          }
+        } else if (btn.classList.contains('search-move-up-btn')) {
+          if (index > 0) {
+            [searches[index - 1], searches[index]] = [searches[index], searches[index - 1]];
+            setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+            setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
+            renderSearches();
+            showStatus('Search moved up!');
+            syncSearchesInBackground();
+          }
+        } else if (btn.classList.contains('search-move-down-btn')) {
+          if (index < searches.length - 1) {
+            [searches[index], searches[index + 1]] = [searches[index + 1], searches[index]];
+            setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+            setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
+            renderSearches();
+            showStatus('Search moved down!');
+            syncSearchesInBackground();
+          }
+        }
+      });
 
       addSearchBtn.addEventListener('click', async () => {
         const term = newSearchTerm.value.trim();
