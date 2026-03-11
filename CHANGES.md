@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.40.3 - AI Title Refined
+
+- **Enhancement**: Updated AI Review Generator title instructions to specify it must be under 100 characters and short but useful ("less is more").
+
 ## Version 1.40.2 - AI Review Enhancement
 
 - **Enhancement**: Refined AI Review Generator prompt to further improve natural human tone.
