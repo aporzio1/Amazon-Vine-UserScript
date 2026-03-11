@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.40.3
+// @version      1.40.4
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1501,7 +1501,41 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         titleDiv.textContent = title;
         bodyDiv.textContent = body;
         outputDiv.style.display = 'block';
-        showStatus('Review generated successfully!');
+
+        if (window.location.href.includes('/review/create-review')) {
+          try {
+            // Most common Amazon review form selectors
+            const titleInput = document.querySelector('input[name="reviewTitle"], input[id*="review-title"], .ryp__review-title__input');
+            const bodyInput = document.querySelector('textarea[name="reviewBody"], textarea[id*="review-text"], .ryp__review-body__textarea');
+
+            let autoFilled = false;
+
+            if (titleInput) {
+              titleInput.value = title;
+              titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+              titleInput.dispatchEvent(new Event('change', { bubbles: true }));
+              autoFilled = true;
+            }
+
+            if (bodyInput) {
+              bodyInput.value = body;
+              bodyInput.dispatchEvent(new Event('input', { bubbles: true }));
+              bodyInput.dispatchEvent(new Event('change', { bubbles: true }));
+              autoFilled = true;
+            }
+
+            if (autoFilled) {
+              showStatus('Review generated and inserted automatically!');
+            } else {
+              showStatus('Review generated successfully! (Could not auto-fill fields)');
+            }
+          } catch (e) {
+            console.error('Vine Tools auto-fill error:', e);
+            showStatus('Review generated successfully!');
+          }
+        } else {
+          showStatus('Review generated successfully!');
+        }
       } catch (error) {
         showStatus(error.message, true);
       } finally {

@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.40.4 - AI Review Auto-Fill
+
+- **Feature**: AI Review Generator now automatically fills the Amazon review form fields (title and body) with the generated text when used on the review creation page (`/review/create-review`), saving you a couple of clicks!
+
 ## Version 1.40.3 - AI Title Refined
 
 - **Enhancement**: Updated AI Review Generator title instructions to specify it must be under 100 characters and short but useful ("less is more").
