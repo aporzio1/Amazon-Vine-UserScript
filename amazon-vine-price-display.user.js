@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.40.1
+// @version      1.40.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1136,14 +1136,19 @@ Be insightful yet specific: Reviews are about the product. Avoid vague, general,
 
 Check your review for basic grammar and sentence structure (but don't make it sound overly polished or formal).
 
-AVOID these AI tells:
+AVOID these AI tells and unnatural formats:
+- Starting with greetings (e.g., "Hey there", "Hi", "Hello")
 - Starting with "As a..." or "As someone who..."
 - Phrases like "overall," "in conclusion," "it's worth noting"
 - Overly balanced structure (pro, con, pro, con)
 - Perfect grammar with no personality
 - Generic statements that could apply to any product
 
-Format: Title on first line (one sentence, clear and concise). Body on new line (5-8 sentences). Do NOT mention the star rating number.`;
+Format instructions strictly:
+- First line MUST be the title text only. Do NOT include labels like "Title:" and do NOT put the title in quotes.
+- Second line onward MUST be the review body (5-8 sentences).
+- Jump straight into the review body without conversational greetings.
+- Do NOT mention the star rating number.`;
 
     const userPrompt = `Write a review for this product as if you personally tested it.
 
@@ -1151,7 +1156,7 @@ Product: ${productDescription}
 
 ${userComments ? `Personal notes from your testing: ${userComments}` : 'Write based on the product description and imagine realistic use cases.'}
 
-This should be a ${sentiment} review. Write naturally - like you're texting a friend about this product. Include specific details that make it believable you actually used it.`;
+This should be a ${sentiment} review. Write naturally - like you're telling a friend about this product, but do not use any greetings or pleasantries. Include specific details that make it believable you actually used it.`;
 
 
     try {

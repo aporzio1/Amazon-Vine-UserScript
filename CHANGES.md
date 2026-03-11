@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.40.2 - AI Review Enhancement
+
+- **Enhancement**: Refined AI Review Generator prompt to further improve natural human tone.
+  - Eliminated conversational greetings (e.g., "Hey there") at the start of reviews.
+  - Prevented the AI from explicitly writing "Title:" prefixes or putting quotes around the title text.
+
 ## Version 1.40.1 - Code Quality Fixes
 
 - **Fix**: Removed duplicate `autoAdvance` variable assignment on settings save.
