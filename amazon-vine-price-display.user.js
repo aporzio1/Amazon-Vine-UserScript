@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.40.5
+// @version      1.40.6
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1145,7 +1145,7 @@ AVOID these AI tells and unnatural formats:
 - Generic statements that could apply to any product
 
 Format instructions strictly:
-- First line MUST be the title text only, under 100 characters ("less is more" - keep it short but useful). Do NOT include labels like "Title:" and do NOT put the title in quotes.
+- First line MUST be the title text only. It MUST be a single, short phrase (under 10 words, max 60 characters). NEVER write a multi-sentence title. "Less is more". Do NOT include labels like "Title:" and do NOT put the title in quotes.
 - Second line onward MUST be the review body (5-8 sentences).
 - Jump straight into the review body without conversational greetings.
 - Do NOT mention the star rating number.`;

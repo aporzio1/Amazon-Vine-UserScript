@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.40.6 - AI Title Strict Constraints
+
+- **Enhancement**: Fixed the AI Review title prompt and made it extremely explicit that the title MUST be a single, short phrase under 10 words, preventing long rambling multi-sentence titles.
+
 ## Version 1.40.5 - AI Review Box Fix
 
 - **Fix**: Improved Amazon Review Box auto-fill logic to correctly target React-handled textareas and fallback gracefully to the unassigned textareas on the page. Form inputs now use native setters to ensure Amazon's validation registers the injected text properly.
