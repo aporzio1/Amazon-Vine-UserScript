@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.40.5 - AI Review Box Fix
+
+- **Fix**: Improved Amazon Review Box auto-fill logic to correctly target React-handled textareas and fallback gracefully to the unassigned textareas on the page. Form inputs now use native setters to ensure Amazon's validation registers the injected text properly.
+
 ## Version 1.40.4 - AI Review Auto-Fill
 
 - **Feature**: AI Review Generator now automatically fills the Amazon review form fields (title and body) with the generated text when used on the review creation page (`/review/create-review`), saving you a couple of clicks!

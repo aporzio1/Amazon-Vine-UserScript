@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.40.4
+// @version      1.40.5
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1505,22 +1505,49 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         if (window.location.href.includes('/review/create-review')) {
           try {
             // Most common Amazon review form selectors
-            const titleInput = document.querySelector('input[name="reviewTitle"], input[id*="review-title"], .ryp__review-title__input');
-            const bodyInput = document.querySelector('textarea[name="reviewBody"], textarea[id*="review-text"], .ryp__review-body__textarea');
+            const titleInput = document.querySelector('input[name="reviewTitle"], input[id*="review-title"], input[id="ryp__review-title__input"]');
+
+            // Amazon has several variations for the Write a Review box
+            let bodyInput = document.querySelector('#ryp__review-text__textarea, textarea[id*="review-text"], textarea[id*="review-body"], [data-hook="review-body"], textarea[name="review"], textarea.ryp__review-text__textarea');
+            if (!bodyInput) {
+              const allTextareas = document.querySelectorAll('textarea');
+              for (const ta of allTextareas) {
+                if (ta.id !== 'vine-review-comments') {
+                  bodyInput = ta;
+                  break;
+                }
+              }
+            }
 
             let autoFilled = false;
 
-            if (titleInput) {
-              titleInput.value = title;
-              titleInput.dispatchEvent(new Event('input', { bubbles: true }));
-              titleInput.dispatchEvent(new Event('change', { bubbles: true }));
+            // React compatible value setter
+            const fillReactInput = (element, value) => {
+              if (!element) return false;
+
+              const isTextArea = element.tagName.toLowerCase() === 'textarea';
+              const nativeValueSetter = Object.getOwnPropertyDescriptor(
+                window[isTextArea ? 'HTMLTextAreaElement' : 'HTMLInputElement'].prototype,
+                "value"
+              );
+
+              if (nativeValueSetter && nativeValueSetter.set) {
+                nativeValueSetter.set.call(element, value);
+              } else {
+                element.value = value;
+              }
+
+              element.dispatchEvent(new Event('input', { bubbles: true }));
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            };
+
+            if (titleInput && fillReactInput(titleInput, title)) {
               autoFilled = true;
             }
 
-            if (bodyInput) {
-              bodyInput.value = body;
-              bodyInput.dispatchEvent(new Event('input', { bubbles: true }));
-              bodyInput.dispatchEvent(new Event('change', { bubbles: true }));
+            // If bodyInput is found (and it's not the comment box of our own UI)
+            if (bodyInput && bodyInput.id !== 'vine-review-comments' && fillReactInput(bodyInput, body)) {
               autoFilled = true;
             }
 
