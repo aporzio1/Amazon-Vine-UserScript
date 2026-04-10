@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.40.6
+// @version      1.40.7
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -209,9 +209,9 @@
       }
 
       // Ensure all required fields exist
-      if (!thresholds.GREEN_MIN) thresholds.GREEN_MIN = CONFIG.DEFAULT_THRESHOLDS.GREEN_MIN;
-      if (!thresholds.YELLOW_MIN) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
-      if (!thresholds.RED_MAX) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
+      if (thresholds.GREEN_MIN == null) thresholds.GREEN_MIN = CONFIG.DEFAULT_THRESHOLDS.GREEN_MIN;
+      if (thresholds.YELLOW_MIN == null) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
+      if (thresholds.RED_MAX == null) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
 
       cachedThresholds = thresholds;
       callback(cachedThresholds);
@@ -492,20 +492,12 @@
     // 0. Check innerHTML directly (most reliable for lazy-loaded content)
     const htmlContent = item.innerHTML || '';
     if (htmlContent.includes('data-is-pre-release="true"') || htmlContent.includes('vvp-badge-prerelease')) {
-      console.log('[Vine Pre-Release] ✓ Found via innerHTML check');
       return true;
     }
 
     // 1. Check for Amazon's official data attribute (most reliable)
     const input = item.querySelector('input[data-is-pre-release="true"]');
-    console.log('[Vine Pre-Release] Check:', {
-      foundInput: !!input,
-      hasVvpBadge: !!item.querySelector('.vvp-badge-prerelease'),
-      itemClass: item.className,
-      hasInnerHTML: htmlContent.length > 0
-    });
     if (input) {
-      console.log('[Vine Pre-Release] ✓ Found via data attribute');
       return true;
     }
 
@@ -516,7 +508,7 @@
       return true;
     }
 
-    // 2. Check text content with normalization (remove special chars/spaces)
+    // 3. Check text content with normalization (remove special chars/spaces)
     // This handles "Pre-Release", "Pre - Release", "Pre Release", etc.
     const rawText = (item.textContent || item.innerText || '');
     const normalizedText = rawText.toLowerCase().replace(/[\W_]+/g, '');
@@ -529,7 +521,7 @@
       return true;
     }
 
-    // 2. Check image alt text (badges are often images)
+    // 4. Check image alt text (badges are often images)
     const images = item.querySelectorAll('img');
     for (const img of images) {
       const alt = (img.alt || '').toLowerCase().replace(/[\W_]+/g, '');
@@ -539,7 +531,7 @@
       }
     }
 
-    // 3. Check specific badge selectors (checking ALL badges, not just the first found)
+    // 5. Check specific badge selectors (checking ALL badges, not just the first found)
     const badgeTexts = item.querySelectorAll('.a-badge-text');
     for (const badge of badgeTexts) {
       const label = (badge.textContent || '').toLowerCase().replace(/[\W_]+/g, '');
@@ -809,7 +801,7 @@
 
         // Check if all items are hidden (by any filter)
         const allHidden = allItems.every(item => {
-          return getComputedStyle(item).display === 'none';
+          return item.dataset.vineHidden === 'true';
         });
 
         if (allHidden) {
@@ -976,9 +968,7 @@
       flex-wrap: wrap;
     `;
 
-    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true, preRelease: true });
-    // Ensure preRelease exists for existing users who might have old config
-    if (typeof currentFilter.preRelease === 'undefined') currentFilter.preRelease = true;
+    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
 
     // Hide Cached Items Toggle
     const hideCachedWrapper = document.createElement('label');
@@ -1160,29 +1150,39 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
 
     try {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: 'gpt-3.5-turbo',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.7,
-          max_tokens: 500
-        })
+      const data = await new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'POST',
+          url: 'https://api.openai.com/v1/chat/completions',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          data: JSON.stringify({
+            model: 'gpt-3.5-turbo',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.7,
+            max_tokens: 500
+          }),
+          onload: (response) => {
+            if (response.status >= 200 && response.status < 300) {
+              resolve(JSON.parse(response.responseText));
+            } else {
+              try {
+                const error = JSON.parse(response.responseText);
+                reject(new Error(error.error?.message || 'API request failed'));
+              } catch (e) {
+                reject(new Error(`API request failed: ${response.status}`));
+              }
+            }
+          },
+          onerror: (error) => reject(new Error('Network error calling OpenAI API'))
+        });
       });
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error?.message || 'API request failed');
-      }
-
-      const data = await response.json();
       return data.choices[0].message.content.trim();
     } catch (error) {
       console.error('Error generating review:', error);
@@ -1456,8 +1456,20 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
           const productUrl = `https://www.amazon.com/dp/${asin}`;
 
           try {
-            const response = await fetch(productUrl);
-            const html = await response.text();
+            const html = await new Promise((resolve, reject) => {
+              GM_xmlhttpRequest({
+                method: 'GET',
+                url: productUrl,
+                onload: (response) => {
+                  if (response.status === 200) {
+                    resolve(response.responseText);
+                  } else {
+                    reject(new Error(`HTTP ${response.status}`));
+                  }
+                },
+                onerror: (error) => reject(new Error('Network error fetching product page'))
+              });
+            });
             const parser = new DOMParser();
             const doc = parser.parseFromString(html, 'text/html');
 
@@ -1987,7 +1999,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
     openSettingsModal = function () {
       if (settingsModal) {
-        document.body.removeChild(settingsModal);
+        settingsModal.remove();
         settingsModal = null;
         return;
       }
@@ -2037,9 +2049,9 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       }
 
       // Ensure all required fields exist
-      if (!thresholds.GREEN_MIN) thresholds.GREEN_MIN = CONFIG.DEFAULT_THRESHOLDS.GREEN_MIN;
-      if (!thresholds.YELLOW_MIN) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
-      if (!thresholds.RED_MAX) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
+      if (thresholds.GREEN_MIN == null) thresholds.GREEN_MIN = CONFIG.DEFAULT_THRESHOLDS.GREEN_MIN;
+      if (thresholds.YELLOW_MIN == null) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
+      if (thresholds.RED_MAX == null) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
 
       const hideCached = getStorage(CONFIG.HIDE_CACHED_KEY, false);
       const autoAdvanceEnabled = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
@@ -2312,8 +2324,6 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
                   <td style="padding: 12px; color: #6b7280;">Toggle Hide Cached</td>
                 </tr>
                 <tr style="border-bottom: 1px solid #e5e7eb;">
-
-                <tr style="border-bottom: 1px solid #e5e7eb;">
                   <td style="padding: 12px;">
                     <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">3</code>
                   </td>
@@ -2431,6 +2441,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
             if (!isNaN(price)) {
               const color = getPriceColorSync(price);
               badge.className = `vine-price-badge vine-price-${color}`;
+              badge.setAttribute('data-price-color', color);
 
               // Re-apply filter since color might have changed
               applyColorFilter(item, color);
@@ -2445,9 +2456,8 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
         // Close the modal after a brief delay to show the success message
         setTimeout(() => {
-          const modal = document.getElementById('vine-settings-modal');
-          if (modal) {
-            document.body.removeChild(modal);
+          if (settingsModal) {
+            settingsModal.remove();
             settingsModal = null;
           }
         }, 800);
@@ -2715,7 +2725,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
       settingsModal.addEventListener('click', (e) => {
         if (e.target === settingsModal) {
-          document.body.removeChild(settingsModal);
+          settingsModal.remove();
           settingsModal = null;
         }
       });
@@ -2961,10 +2971,9 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
       // Escape: Close open modals
       if (e.key === 'Escape') {
-        const modal = document.getElementById('vine-settings-modal');
-        if (modal) {
+        if (settingsModal) {
           e.preventDefault();
-          document.body.removeChild(modal);
+          settingsModal.remove();
           settingsModal = null;
           return;
         }
