@@ -1,5 +1,12 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.1 - Dark Mode Revert & UI Polish
+
+- **Fix**: Reverted the `@media (prefers-color-scheme: dark)` block from v1.41.0. On macOS dark mode, the modal interior remained hardcoded white but buttons pulled dark-mode text colors, making "Save Settings" (white-on-yellow) and "Clear Cache" (red-on-black) illegible. Userscript is now explicitly light-only to match its host (Amazon is light-only too).
+- **Hardening**: Primary button (`.vine-btn-primary`) now hardcodes `color: #0F1111` so yellow-button text can never flip even if someone reintroduces a dark theme later.
+- **UX**: Demoted "Clear Cache" from a full-width twin of "Save Settings" to a small, underlined, right-aligned danger-link. Save is the happy path; Clear Cache is an escape hatch — the visual weight now reflects that. Two-step armed-click confirmation retained.
+- **Consistency**: Migrated all remaining inline hardcoded grays (`#374151`, `#6b7280`, `#9ca3af`, `#e5e7eb`, `#f3f4f6`, `#f9fafb`, `#1f2937`, `#333`, `#e7e7e7`, and the green callout trio `#f0fdf4`/`#bbf7d0`/`#166534`) to `--vine-*` CSS tokens. The modal's copy/labels/borders now all read from the same palette.
+
 ## Version 1.41.0 - Code & UI Cleanup Pass
 
 - **Feature**: Saved searches now support **drag-and-drop reordering** — grab the ⋮⋮ handle on any row and drop it where you want. Up/down arrow buttons removed.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.0
+// @version      1.41.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -846,7 +846,7 @@
         justify-content: flex-end;
         padding: 10px 0;
         margin-bottom: 10px;
-        border-bottom: 1px solid #e7e7e7;
+        border-bottom: 1px solid var(--vine-border);
       `;
     }
 
@@ -872,7 +872,7 @@
       cursor: pointer;
       user-select: none;
       font-size: 13px;
-      color: #333;
+      color: var(--vine-fg);
       font-family: "Amazon Ember", Arial, sans-serif;
     `;
 
@@ -922,7 +922,7 @@
         cursor: pointer;
         user-select: none;
         font-size: 13px;
-        color: #333;
+        color: var(--vine-fg);
         font-family: "Amazon Ember", Arial, sans-serif;
       `;
 
@@ -1708,26 +1708,26 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
         <div id="content-price" class="vine-tab-content" style="display: none;">
           <div style="margin-bottom: 24px;">
-          <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Price Ranges</label>
+          <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">Price Ranges</label>
           <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; color: #6b7280;">🟢 Green (minimum): $</label>
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">🟢 Green (minimum): $</label>
             <input type="number" id="vine-green-min" value="${thresholds.GREEN_MIN}" step="0.01"
-              style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-            <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">Items $${thresholds.GREEN_MIN} and above</div>
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 2px;">Items $${thresholds.GREEN_MIN} and above</div>
           </div>
           <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; color: #6b7280;">🟡 Yellow (minimum): $</label>
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">🟡 Yellow (minimum): $</label>
             <input type="number" id="vine-yellow-min" value="${thresholds.YELLOW_MIN}" step="0.01"
-              style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-            <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">Items $${thresholds.YELLOW_MIN} to $${(thresholds.GREEN_MIN - 0.01).toFixed(2)}</div>
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 2px;">Items $${thresholds.YELLOW_MIN} to $${(thresholds.GREEN_MIN - 0.01).toFixed(2)}</div>
           </div>
           <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; color: #6b7280;">🔴 Red (maximum): $</label>
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">🔴 Red (maximum): $</label>
             <input type="number" id="vine-red-max" value="${thresholds.RED_MAX}" step="0.01"
-              style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-            <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">Items below $${(thresholds.YELLOW_MIN).toFixed(2)}</div>
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 2px;">Items below $${(thresholds.YELLOW_MIN).toFixed(2)}</div>
           </div>
-          <div style="font-size: 12px; color: #9ca3af; margin-top: 8px; padding: 8px; background: #f3f4f6; border-radius: 4px;">
+          <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 8px; padding: 8px; background: var(--vine-surface); border-radius: 4px;">
             <div><strong>Current ranges:</strong></div>
             <div>🟢 Green: $${thresholds.GREEN_MIN}+</div>
             <div>🟡 Yellow: $${thresholds.YELLOW_MIN} - $${(thresholds.GREEN_MIN - 0.01).toFixed(2)}</div>
@@ -1741,66 +1741,68 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
           <label style="display: flex; align-items: center; cursor: pointer;">
             <input type="checkbox" id="vine-auto-advance" ${autoAdvanceEnabled ? 'checked' : ''} 
               style="margin-right: 8px; width: 18px; height: 18px;">
-            <span style="font-weight: 600; color: #374151;">Auto-advance when all items hidden</span>
+            <span style="font-weight: 600; color: var(--vine-fg);">Auto-advance when all items hidden</span>
           </label>
-          <div style="font-size: 12px; color: #9ca3af; margin-top: 4px; margin-left: 26px;">
+          <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px; margin-left: 26px;">
             Automatically go to the next page when all items on the current page are hidden
           </div>
         </div>
 
-        <div style="margin-bottom: 24px; padding-top: 24px; border-top: 2px solid #e5e7eb;">
-          <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">AI Review Generator</label>
+        <div style="margin-bottom: 24px; padding-top: 24px; border-top: 1px solid var(--vine-border);">
+          <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">AI Review Generator</label>
           <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; color: #6b7280;">OpenAI API Key (optional):</label>
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">OpenAI API Key (optional):</label>
             <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}" 
               placeholder="sk-..." 
-              style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-            <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
               Required for AI review generation. Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
             </div>
           </div>
         </div>
 
         <div style="margin-bottom: 24px;">
-          <button type="button" id="vine-save-btn" class="vine-btn-primary" style="width: 100%; margin-bottom: 8px;">Save Settings</button>
-          <button type="button" id="vine-clear-cache-btn" class="vine-btn-danger" style="width: 100%;">Clear Cache</button>
+          <button type="button" id="vine-save-btn" class="vine-btn-primary" style="width: 100%;">Save Settings</button>
+          <div style="display: flex; justify-content: flex-end; margin-top: 12px;">
+            <button type="button" id="vine-clear-cache-btn" class="vine-btn-link-danger">Clear cached prices</button>
+          </div>
         </div>
         </div>
 
         <div id="content-searches" class="vine-tab-content">
           <div style="margin-bottom: 20px;">
-            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Add New Search</label>
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">Add New Search</label>
             <div style="display: flex; gap: 8px;">
               <input type="text" id="new-search-term" placeholder="Enter search term (e.g. 'laptop', 'headphones')"
                 style="flex: 1; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
               <button type="button" id="add-search-btn" class="vine-btn-primary" style="white-space: nowrap;">Add Search</button>
             </div>
-            <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
               Saved searches will appear as quick links below
             </div>
           </div>
 
           <div style="margin-bottom: 16px;">
-            <label style="display: block; margin-bottom: 12px; font-weight: 600; color: #374151;">Your Saved Searches</label>
+            <label style="display: block; margin-bottom: 12px; font-weight: 600; color: var(--vine-fg);">Your Saved Searches</label>
             <div id="saved-searches-list" style="display: flex; flex-direction: column; gap: 8px;">
-              ${savedSearches.length === 0 ? '<div style="padding: 20px; text-align: center; color: #9ca3af; background: #f9fafb; border-radius: 6px;">No saved searches yet. Add one above!</div>' : ''}
+              ${savedSearches.length === 0 ? '<div style="padding: 20px; text-align: center; color: var(--vine-fg-muted); background: var(--vine-surface); border-radius: 6px;">No saved searches yet. Add one above!</div>' : ''}
             </div>
           </div>
         </div>
 
         <div id="content-sync" class="vine-tab-content" style="display: none;">
           <div style="margin-bottom: 24px;">
-            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Cloud Sync (GitHub Gist)</label>
-            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">Cloud Sync (GitHub Gist)</label>
+            <div style="background: var(--vine-surface); border: 1px solid var(--vine-border); color: var(--vine-fg); padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;">
               Sync your price cache across multiple devices using a private GitHub Gist.
             </div>
             
             <div style="margin-bottom: 16px;">
-              <label style="display: block; margin-bottom: 4px; color: #6b7280;">GitHub Personal Access Token:</label>
+              <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">GitHub Personal Access Token:</label>
               <input type="password" id="vine-github-token" value="${githubToken}" 
                 placeholder="ghp_..." 
-                style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-              <div style="font-size: 11px; color: #9ca3af; margin-top: 4px;">
+                style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+              <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 4px;">
                 Token requires <strong>gist</strong> permission. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Vine%20Price%20Scaler" target="_blank" style="color: var(--vine-link);">Generate Token</a>
               </div>
             </div>
@@ -1817,71 +1819,71 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
         <div id="content-shortcuts" class="vine-tab-content" style="display: none;">
           <div style="margin-bottom: 16px;">
-            <label style="display: block; margin-bottom: 12px; font-weight: 600; color: #374151; font-size: 16px;">⌨️ Keyboard Shortcuts</label>
-            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 12px; font-weight: 600; color: var(--vine-fg); font-size: 16px;">⌨️ Keyboard Shortcuts</label>
+            <div style="background: var(--vine-surface); border: 1px solid var(--vine-border); color: var(--vine-fg); padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;">
               Use these keyboard shortcuts to navigate faster and boost your productivity!
             </div>
             <table style="width: 100%; border-collapse: collapse;">
               <thead>
-                <tr style="background: #f9fafb;">
-                  <th style="padding: 12px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #374151;">Shortcut</th>
-                  <th style="padding: 12px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #374151;">Action</th>
+                <tr style="background: var(--vine-surface);">
+                  <th style="padding: 12px; text-align: left; border-bottom: 1px solid var(--vine-border); font-weight: 600; color: var(--vine-fg);">Shortcut</th>
+                  <th style="padding: 12px; text-align: left; border-bottom: 1px solid var(--vine-border); font-weight: 600; color: var(--vine-fg);">Action</th>
                 </tr>
               </thead>
               <tbody>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">V V (double-tap)</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">V V (double-tap)</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Open/Close Vine Tools</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Open/Close Vine Tools</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">Escape</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">Escape</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Close any open modal</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Close any open modal</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">1</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">1</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Hide Cached</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Toggle Hide Cached</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">3</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">3</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Purple filter</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Toggle Purple filter</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">4</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">4</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Green filter</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Toggle Green filter</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">5</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">5</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Yellow filter</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Toggle Yellow filter</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">6</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">6</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Toggle Red filter</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Toggle Red filter</td>
                 </tr>
-                <tr style="border-bottom: 1px solid #e5e7eb;">
+                <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">←</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">←</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Go to previous page</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Go to previous page</td>
                 </tr>
                 <tr>
                   <td style="padding: 12px;">
-                    <code style="background: #f3f4f6; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">→</code>
+                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">→</code>
                   </td>
-                  <td style="padding: 12px; color: #6b7280;">Go to next page</td>
+                  <td style="padding: 12px; color: var(--vine-fg-muted);">Go to next page</td>
                 </tr>
               </tbody>
             </table>
@@ -2354,21 +2356,9 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       --vine-z-modal: 10000;
     }
 
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --vine-bg: #1A1A1A;
-        --vine-fg: #E3E6E6;
-        --vine-fg-muted: #A8ADAD;
-        --vine-border: #3A3A3A;
-        --vine-border-strong: #5A5A5A;
-        --vine-surface: #242424;
-        --vine-secondary: #2E2E2E;
-        --vine-secondary-hover: #3A3A3A;
-        --vine-danger-bg: #3A1515;
-        --vine-success-bg: #1A3A1F;
-        --vine-success-fg: #A5D6A7;
-      }
-    }
+    /* Intentionally light-only: this UI is injected into Amazon, which is also light-only.
+       Tokens above don't flip with prefers-color-scheme — that caused button text to go
+       illegible on macOS dark-mode (v1.41.0 regression). */
 
     .vine-price-badge {
       position: absolute;
@@ -2487,7 +2477,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
     /* Shared button styles inside the settings modal and review generator. */
     .vine-btn-primary {
       background: var(--vine-primary);
-      color: var(--vine-fg);
+      color: #0F1111; /* hardcoded: always dark text on Amazon yellow — WCAG AA */
       border: 1px solid var(--vine-primary-border);
       border-radius: 8px;
       padding: 8px 14px;
@@ -2642,21 +2632,25 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       border-bottom-color: var(--vine-primary);
     }
 
-    .vine-btn-danger {
-      background: var(--vine-bg);
+    /* Destructive-but-recoverable actions: de-emphasized link-style, not a full-width
+       twin of the primary. Upgrades visually (bg + border) when "armed" via two-step click. */
+    .vine-btn-link-danger {
+      background: transparent;
       color: var(--vine-danger);
-      border: 1px solid var(--vine-border);
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-size: 14px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
       cursor: pointer;
-      min-height: 36px;
+      text-decoration: underline;
+      text-underline-offset: 2px;
     }
-    .vine-btn-danger:hover { background: var(--vine-danger-bg); border-color: var(--vine-danger); }
-    .vine-btn-danger.armed {
+    .vine-btn-link-danger:hover { background: var(--vine-danger-bg); text-decoration: none; }
+    .vine-btn-link-danger.armed {
       background: var(--vine-danger-bg);
       border-color: var(--vine-danger);
       font-weight: 600;
+      text-decoration: none;
     }
 
     /* AI Review Generator panel — matches Amazon's card aesthetic. */
