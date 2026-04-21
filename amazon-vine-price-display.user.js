@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.4
+// @version      1.41.5
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1218,11 +1218,11 @@ AVOID these AI tells and unnatural formats:
 - Perfect grammar with no personality
 - Generic statements that could apply to any product
 
-Format instructions strictly:
-- First line MUST be the title text only. It MUST be a single, short phrase (under 10 words, max 60 characters). NEVER write a multi-sentence title. "Less is more". Do NOT include labels like "Title:" and do NOT put the title in quotes.
-- Second line onward MUST be the review body (5-8 sentences).
-- Jump straight into the review body without conversational greetings.
-- Do NOT mention the star rating number.`;
+Output format:
+You MUST return a JSON object with exactly two string fields:
+- "title": a single short phrase, under 10 words, max 60 characters. NEVER a multi-sentence title. Do NOT include "Title:" or surrounding quotes. "Less is more."
+- "body": the review body, 5-8 sentences. Jump straight into it with no greetings. Do NOT mention the star rating number.
+Return ONLY the JSON object — no prose before or after.`;
 
     const userPrompt = `Write a review for this product as if you personally tested it.
 
@@ -1230,8 +1230,9 @@ Product: ${productDescription}
 
 ${userComments ? `Personal notes from your testing: ${userComments}` : 'Write based on the product description and imagine realistic use cases.'}
 
-This should be a ${sentiment} review. Write naturally - like you're telling a friend about this product, but do not use any greetings or pleasantries. Include specific details that make it believable you actually used it.`;
+This should be a ${sentiment} review. Write naturally - like you're telling a friend about this product, but do not use any greetings or pleasantries. Include specific details that make it believable you actually used it.
 
+Respond with a JSON object: {"title": "...", "body": "..."}`;
 
     try {
       const response = await gmFetch({
@@ -1248,7 +1249,8 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
             { role: 'user', content: userPrompt }
           ],
           temperature: 0.7,
-          max_tokens: 500
+          max_tokens: 700,
+          response_format: { type: 'json_object' }
         })
       });
       const data = JSON.parse(response.responseText);
@@ -1257,6 +1259,33 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       console.error('Error generating review:', error);
       throw error;
     }
+  }
+
+  // Parse the AI response into {title, body}. Prefers JSON (our contract), then falls back
+  // to newline-split, then to first-sentence-split — in case the model ignores JSON mode.
+  function parseGeneratedReview(raw) {
+    const text = (raw || '').trim();
+
+    try {
+      const obj = JSON.parse(text);
+      if (obj && typeof obj.title === 'string' && typeof obj.body === 'string') {
+        return { title: obj.title.trim(), body: obj.body.trim() };
+      }
+    } catch (e) { /* fall through */ }
+
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length >= 2) {
+      return { title: lines[0], body: lines.slice(1).join('\n').trim() };
+    }
+
+    // Single-line response: split on the first sentence boundary if it keeps the title under
+    // the 60-char / 10-word budget. Otherwise bail — caller shows the whole thing as body.
+    const match = text.match(/^([^.!?]{1,60}[.!?])\s+(.+)$/s);
+    if (match && match[1].split(/\s+/).length <= 10) {
+      return { title: match[1].trim(), body: match[2].trim() };
+    }
+
+    return { title: '', body: text };
   }
 
   function createReviewGeneratorUI() {
@@ -1436,11 +1465,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         }
 
         const review = await generateReview(description, stars, comments);
-
-        // Split the review into title and body
-        const lines = review.split('\n');
-        const title = lines[0].trim();
-        const body = lines.slice(1).join('\n').trim();
+        const { title, body } = parseGeneratedReview(review);
 
         titleDiv.textContent = title;
         bodyDiv.textContent = body;

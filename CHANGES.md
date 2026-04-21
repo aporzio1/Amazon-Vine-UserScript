@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.5 - JSON Response Format for AI Reviews
+
+- **Fix**: Negative reviews (2-star, especially with user comments) were producing a blob of prose that got split wrong — the entire review landed in the title field and the body was empty. The model was ignoring the "first line = title, rest = body" format rule and returning everything on a single line separated by a period.
+- **Fix**: Now requests the review as a JSON object with explicit `title` and `body` fields, using OpenAI's `response_format: { type: "json_object" }` JSON mode. No more newline parsing games.
+- **Hardening**: `parseGeneratedReview` has a three-tier fallback: JSON first, then newline-split (for older cache), then first-sentence split (if model ignores JSON mode and returns one-line prose). `max_tokens` bumped from 500 to 700 since JSON adds some overhead.
+
 ## Version 1.41.4 - Scope Review Form Lookup to React App Container
 
 - **Fix**: The v1.41.3 scoped lookup used `form[name="ryp__review-form"]`, which Amazon no longer emits. The body field is rendered by the React app inside `<div id="react-app" class="ryp__desktop">` — scope now prefers that container, with `#react-app` + the old form selectors as fallbacks.
