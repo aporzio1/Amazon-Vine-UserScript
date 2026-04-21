@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.40.7
+// @version      1.41.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -41,11 +41,9 @@
     GIST_ID_KEY: 'vine_gist_id',
     GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
     LAST_SYNC_KEY: 'vine_last_sync',
-    SHIPPING_ADDRESS_KEY: 'vine_shipping_address',
-    ENABLE_QUICK_BUY_KEY: 'vine_enable_quick_buy',
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
-    MAX_CACHE_SIZE: 50000, // Optimized for high capacity
+    MAX_CACHE_SIZE: 50000,
     MAX_RETRIES: 3,
     RETRY_BASE_DELAY: 1000,
     MUTATION_DEBOUNCE: 50,
@@ -54,6 +52,7 @@
       YELLOW_MIN: 50,
       RED_MAX: 49.99
     },
+    DEFAULT_COLOR_FILTER: { green: true, yellow: true, red: true, purple: true },
     AMAZON_DOMAINS: [
       'amazon.com', 'amazon.co.uk', 'amazon.ca', 'amazon.de',
       'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.co.jp',
@@ -67,34 +66,64 @@
       '[data-a-color="price"] .a-offscreen',
       '.a-price-symbol + .a-price-whole',
       '.a-price .a-price-whole'
+    ],
+    VINE_ITEM_SELECTORS: [
+      '.vvp-item-tile',
+      '[data-recommendation-id]',
+      '.a-section.a-spacing-base'
+    ],
+    PRODUCT_DESC_SELECTORS: [
+      '#feature-bullets',
+      '[data-feature-name="featurebullets"]',
+      '#productDescription',
+      '#productTitle'
+    ],
+    NEXT_PAGE_SELECTORS: [
+      'li.a-last a',
+      '.a-pagination .a-last a',
+      'a[aria-label="Next page"]',
+      '.a-pagination li:last-child:not(.a-disabled) a'
+    ],
+    PREV_PAGE_SELECTORS: [
+      'li.a-first a',
+      '.a-pagination .a-first a',
+      'a[aria-label="Previous page"]',
+      '.a-pagination li:first-child:not(.a-disabled) a'
     ]
   };
 
-  // Global reference to settings modal opener (for keyboard shortcuts)
+  // Global references for modal control (used by keyboard shortcuts and close buttons)
   let openSettingsModal = null;
+  let settingsModal = null;
+  let settingsModalPrevFocus = null;
+
+  function closeSettingsModal() {
+    if (!settingsModal) return;
+    settingsModal.remove();
+    settingsModal = null;
+    document.body.style.removeProperty('overflow');
+    if (settingsModalPrevFocus && typeof settingsModalPrevFocus.focus === 'function') {
+      try { settingsModalPrevFocus.focus(); } catch (e) { /* focus target may have unmounted */ }
+    }
+    settingsModalPrevFocus = null;
+  }
 
   // Storage helpers with GM API fallback to localStorage
   const STORAGE_PREFIX = 'vine_price_display_';
 
   function getStorage(key, defaultValue) {
     try {
-      // Try GM API first
       if (typeof GM_getValue !== 'undefined') {
         const value = GM_getValue(key);
         return value !== undefined ? value : defaultValue;
       }
     } catch (e) {
-      // GM API failed, fall through to localStorage
+      console.warn(`GM_getValue failed for "${key}", falling back to localStorage:`, e);
     }
 
-    // Fallback to localStorage
     try {
-      const storageKey = STORAGE_PREFIX + key;
-      const stored = localStorage.getItem(storageKey);
-      if (stored === null) {
-        return defaultValue;
-      }
-      return JSON.parse(stored);
+      const stored = localStorage.getItem(STORAGE_PREFIX + key);
+      return stored === null ? defaultValue : JSON.parse(stored);
     } catch (e) {
       console.error(`Error reading ${key}:`, e);
       return defaultValue;
@@ -103,28 +132,81 @@
 
   function setStorage(key, value) {
     try {
-      // Try GM API first
       if (typeof GM_setValue !== 'undefined') {
         GM_setValue(key, value);
         return;
       }
     } catch (e) {
-      // GM API failed, fall through to localStorage
+      console.warn(`GM_setValue failed for "${key}", falling back to localStorage:`, e);
     }
 
-    // Fallback to localStorage
     try {
-      const storageKey = STORAGE_PREFIX + key;
-      localStorage.setItem(storageKey, JSON.stringify(value));
+      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
     } catch (e) {
       console.error(`Error writing ${key}:`, e);
     }
+  }
+
+  // ---- Network helpers (shared across OpenAI, GitHub Gist, and product-page fetches) ----
+  function gmFetch({ method = 'GET', url, headers, data }) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method,
+        url,
+        headers,
+        data,
+        onload: (response) => {
+          if (response.status >= 200 && response.status < 300) {
+            resolve(response);
+          } else {
+            reject(new Error(`HTTP ${response.status} ${response.statusText || ''}`.trim()));
+          }
+        },
+        onerror: () => reject(new Error(`Network error: ${url}`))
+      });
+    });
+  }
+
+  function githubRequest(token, endpoint, method = 'GET', body = null) {
+    return gmFetch({
+      method,
+      url: `https://api.github.com/${endpoint}`,
+      headers: {
+        'Authorization': `token ${token}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json'
+      },
+      data: body ? JSON.stringify(body) : null
+    }).then(r => JSON.parse(r.responseText))
+      .catch(err => { throw new Error(`GitHub API ${method} ${endpoint}: ${err.message}`); });
+  }
+
+  // Temporary status banner wired to a specific DOM element. Returns a showStatus(message, isError) fn.
+  function makeShowStatus(statusEl, timeoutMs = 3000) {
+    let hideTimer = null;
+    return (message, isError = false) => {
+      statusEl.textContent = message;
+      statusEl.style.display = 'block';
+      statusEl.style.background = isError ? '#FEF0EF' : '#E8F5E9';
+      statusEl.style.color = isError ? '#B12704' : '#1B5E20';
+      statusEl.style.border = isError ? '1px solid #F5C2C0' : '1px solid #C8E6C9';
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => { statusEl.style.display = 'none'; }, timeoutMs);
+    };
   }
 
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  function findFirstMatch(root, selectors) {
+    for (const s of selectors) {
+      const el = root.querySelector(s);
+      if (el) return el;
+    }
+    return null;
   }
 
   // Cache management
@@ -134,7 +216,7 @@
   let hideCachedLoaded = false;
   let autoAdvance = false;
   let autoAdvanceLoaded = false;
-  let colorFilter = { green: true, yellow: true, red: true, purple: true };
+  let colorFilter = { ...CONFIG.DEFAULT_COLOR_FILTER };
   let colorFilterLoaded = false;
 
   // Cache optimization
@@ -148,9 +230,6 @@
 
   // Selector optimization
   let cachedSelector = null;
-
-  // Performance tracking
-  let itemsProcessedThisSession = 0;
 
   function getHideCached(callback) {
     if (hideCachedLoaded) {
@@ -178,7 +257,7 @@
       return;
     }
     colorFilterLoaded = true;
-    colorFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
+    colorFilter = { ...CONFIG.DEFAULT_COLOR_FILTER, ...getStorage(CONFIG.COLOR_FILTER_KEY, {}) };
 
     // Clean up legacy preRelease key if it exists
     if (typeof colorFilter.preRelease !== 'undefined') {
@@ -222,7 +301,6 @@
 
   function getCache(callback) {
     if (memoryCache !== null) {
-      // Return cached version immediately
       callback(memoryCache);
       return;
     }
@@ -231,12 +309,16 @@
       cacheLoaded = true;
       memoryCache = getStorage(CONFIG.CACHE_KEY, {});
 
-      // Perform initial cleanup if needed
-      const now = Date.now();
-      if (now - lastCleanupTime > CLEANUP_INTERVAL) {
-        memoryCache = cleanupExpiredCache(memoryCache);
-        lastCleanupTime = now;
-      }
+      // Defer O(n) cleanup off the first-load path so the first processBatch() isn't blocked.
+      const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 500));
+      idle(() => {
+        const cleaned = cleanupExpiredCache(memoryCache);
+        if (Object.keys(cleaned).length !== Object.keys(memoryCache).length) {
+          memoryCache = cleaned;
+          setStorage(CONFIG.CACHE_KEY, cleaned);
+        }
+        lastCleanupTime = Date.now();
+      });
     }
 
     callback(memoryCache);
@@ -309,25 +391,11 @@
     if (pendingCacheUpdates.size === 0) return;
 
     getCache((cache) => {
-      // Apply all pending updates to in-memory cache
-      pendingCacheUpdates.forEach((value, key) => {
-        cache[key] = value;
-      });
-
-      itemsProcessedThisSession += pendingCacheUpdates.size;
+      pendingCacheUpdates.forEach((value, key) => { cache[key] = value; });
       pendingCacheUpdates.clear();
-
-      // Save to storage (triggering cleanup and limit)
       setCache(cache);
     });
   }
-
-  // Ensure cache is saved before navigating away
-  window.addEventListener('beforeunload', () => {
-    if (pendingCacheUpdates.size > 0) {
-      flushCacheUpdates();
-    }
-  });
 
   function setCachedPrice(asin, price, isSeen = true) {
     // Add to pending updates
@@ -378,80 +446,41 @@
     return null;
   }
 
-  // Fetch price using GM_xmlhttpRequest
   function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES) {
     if (!isValidAmazonURL(url)) {
       callback(null);
       return;
     }
 
+    const retry = () => {
+      if (retries > 0) {
+        const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
+        setTimeout(() => fetchPrice(url, asin, callback, retries - 1), delay);
+      } else {
+        callback(null);
+      }
+    };
+
     GM_xmlhttpRequest({
       method: 'GET',
-      url: url,
-      onload: function (response) {
-        if (response.status === 200) {
-          const price = extractPriceFromHTML(response.responseText);
-          if (price !== null) {
-            // Caching is now handled by the caller based on filters
-            callback({ price: price, isCached: false });
-          } else {
-            if (retries > 0) {
-              const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
-              setTimeout(() => {
-                fetchPrice(url, asin, callback, retries - 1);
-              }, delay);
-            } else {
-              callback(null);
-            }
-          }
-        } else {
-          if (retries > 0) {
-            const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
-            setTimeout(() => {
-              fetchPrice(url, asin, callback, retries - 1);
-            }, delay);
-          } else {
-            callback(null);
-          }
-        }
+      url,
+      onload: (response) => {
+        if (response.status !== 200) return retry();
+        const price = extractPriceFromHTML(response.responseText);
+        if (price === null) return retry();
+        callback({ price, isCached: false });
       },
-      onerror: function (error) {
-        if (retries > 0) {
-          const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
-          setTimeout(() => {
-            fetchPrice(url, asin, callback, retries - 1);
-          }, delay);
-        } else {
-          callback(null);
-        }
-      }
+      onerror: retry
     });
   }
 
-  // UI helpers
+  // UI helpers — called per-item on hot paths. getThresholds() handles format migration once at load.
   function getPriceColorSync(price) {
-    let thresholds = cachedThresholds || CONFIG.DEFAULT_THRESHOLDS;
-
-    // Migrate old format (HIGH/MEDIUM) to new format (GREEN_MIN/YELLOW_MIN)
-    if (thresholds.HIGH !== undefined && thresholds.MEDIUM !== undefined) {
-      thresholds = {
-        GREEN_MIN: thresholds.HIGH,
-        YELLOW_MIN: thresholds.MEDIUM,
-        RED_MAX: thresholds.MEDIUM - 0.01
-      };
-      cachedThresholds = thresholds;
-      setStorage(CONFIG.THRESHOLDS_KEY, thresholds);
-    }
-
-    if (price === 0) {
-      return 'purple';
-    } else if (price >= thresholds.GREEN_MIN) {
-      return 'green';
-    } else if (price >= thresholds.YELLOW_MIN) {
-      return 'yellow';
-    } else {
-      return 'red';
-    }
+    const t = cachedThresholds || CONFIG.DEFAULT_THRESHOLDS;
+    if (price === 0) return 'purple';
+    if (price >= t.GREEN_MIN) return 'green';
+    if (price >= t.YELLOW_MIN) return 'yellow';
+    return 'red';
   }
 
   function createPriceBadge(price, isCached, isSeen, color) {
@@ -486,92 +515,69 @@
     return badge;
   }
 
-  // Helper to check if an item is Pre-Release
-  // Note: Pre-release filtering UI removed, but detection still used to mark items as "seen" immediately
+  // Pre-release detection drives the "auto mark as seen" path when price fetch fails.
+  // Memoized on item.dataset.vinePreRelease because the full text-normalization scan is expensive.
   function isPreReleaseItem(item) {
-    // 0. Check innerHTML directly (most reliable for lazy-loaded content)
+    if (item.dataset.vinePreRelease === 'true') return true;
+    if (item.dataset.vinePreRelease === 'false') return false;
+
+    const result = computePreReleaseItem(item);
+    item.dataset.vinePreRelease = result ? 'true' : 'false';
+    return result;
+  }
+
+  function computePreReleaseItem(item) {
     const htmlContent = item.innerHTML || '';
     if (htmlContent.includes('data-is-pre-release="true"') || htmlContent.includes('vvp-badge-prerelease')) {
       return true;
     }
-
-    // 1. Check for Amazon's official data attribute (most reliable)
-    const input = item.querySelector('input[data-is-pre-release="true"]');
-    if (input) {
+    if (item.querySelector('input[data-is-pre-release="true"]')) return true;
+    if (item.classList.contains('vvp-badge-prerelease') || item.querySelector('.vvp-badge-prerelease')) {
       return true;
     }
 
-    // 2. Check for definitive Vine class (on item itself or children)
-    const badgeElement = item.querySelector('.vvp-badge-prerelease');
-    const hasBadgeClass = item.classList.contains('vvp-badge-prerelease');
-    if (hasBadgeClass || badgeElement) {
+    // Normalized text match handles "Pre-Release", "Pre - Release", "Pre Release", etc.
+    const normalizedText = (item.textContent || '').toLowerCase().replace(/[\W_]+/g, '');
+    if (/prerelease|availableforpreorder|preorder|presale|willbereleasedon/.test(normalizedText)) {
       return true;
     }
 
-    // 3. Check text content with normalization (remove special chars/spaces)
-    // This handles "Pre-Release", "Pre - Release", "Pre Release", etc.
-    const rawText = (item.textContent || item.innerText || '');
-    const normalizedText = rawText.toLowerCase().replace(/[\W_]+/g, '');
-
-    if (normalizedText.includes('prerelease') ||
-      normalizedText.includes('availableforpreorder') ||
-      normalizedText.includes('preorder') ||
-      normalizedText.includes('presale') ||
-      normalizedText.includes('willbereleasedon')) {
-      return true;
-    }
-
-    // 4. Check image alt text (badges are often images)
-    const images = item.querySelectorAll('img');
-    for (const img of images) {
+    for (const img of item.querySelectorAll('img')) {
       const alt = (img.alt || '').toLowerCase().replace(/[\W_]+/g, '');
       const title = (img.title || '').toLowerCase().replace(/[\W_]+/g, '');
-      if (alt.includes('prerelease') || title.includes('prerelease')) {
-        return true;
-      }
+      if (alt.includes('prerelease') || title.includes('prerelease')) return true;
     }
 
-    // 5. Check specific badge selectors (checking ALL badges, not just the first found)
-    const badgeTexts = item.querySelectorAll('.a-badge-text');
-    for (const badge of badgeTexts) {
+    for (const badge of item.querySelectorAll('.a-badge-text')) {
       const label = (badge.textContent || '').toLowerCase().replace(/[\W_]+/g, '');
-      if (label.includes('prerelease')) {
-        return true;
-      }
+      if (label.includes('prerelease')) return true;
     }
 
     return false;
   }
 
-  // Apply color filter to an item
+  // Apply color filter to an item.
+  // NOTE: we intentionally don't flip item.dataset.vineSeen to 'true' when a not-seen item is shown,
+  // otherwise toggling "Hide Seen" back on would make it vanish mid-session. The cache is bumped
+  // to seen=true once, for the next session — guarded by vineSeenPersisted so we don't re-write
+  // the cache every time the filter re-applies.
   function applyColorFilter(item, color) {
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
         const isSeen = item.dataset.vineSeen === 'true';
-        let shouldShow = true;
-
-        if (isSeen && shouldHideCached) {
-          shouldShow = false;
-        } else if (!filter[color]) {
-          shouldShow = false;
-        } else {
-          shouldShow = true;
-        }
+        const colorAllowed = filter[color];
+        const shouldShow = colorAllowed && !(isSeen && shouldHideCached);
 
         if (shouldShow) {
           item.style.display = '';
           item.dataset.vineHidden = 'false';
 
-          // If item is displayed but was marked as not seen, update it to seen
-          if (!isSeen) {
-            // Do NOT update dataset.vineSeen to true here, or it will vanish immediately if "Hide Seen" is on.
-            // We only want to update the cache for the NEXT session.
+          if (!isSeen && item.dataset.vineSeenPersisted !== 'true') {
             const asin = item.dataset.vineAsin;
             const price = parseFloat(item.dataset.vinePrice);
-
             if (asin && !isNaN(price)) {
-              // Update cache to mark as seen
               setCachedPrice(asin, price, true);
+              item.dataset.vineSeenPersisted = 'true';
             }
           }
         } else {
@@ -579,7 +585,6 @@
           item.dataset.vineHidden = 'true';
         }
 
-        // Trigger auto-advance check whenever/if visibility changes
         checkAndAutoAdvance();
       });
     });
@@ -587,95 +592,6 @@
 
   // Processing
   const activeFetches = new Map();
-
-  function processVineItem(item, cachedData = null) {
-    if (item.dataset.vinePriceProcessed) {
-      return;
-    }
-    item.dataset.vinePriceProcessed = 'true';
-
-    // Check if pre-release item first - these might not have standard links/prices
-    const isPreRelease = isPreReleaseItem(item);
-
-    const link = item.querySelector('a[href*="/dp/"]');
-    if (!link) {
-      // No product link - might be pre-release without a listing yet
-      if (isPreRelease) {
-        applyColorFilter(item, 'gray');
-      }
-      return;
-    }
-
-    const url = link.href;
-    const asin = extractASIN(url);
-    if (!asin) {
-      return;
-    }
-
-    if (getComputedStyle(item).position === 'static') {
-      item.style.position = 'relative';
-    }
-
-    // Store ASIN on item for later access (e.g. in applyColorFilter updates)
-    item.dataset.vineAsin = asin;
-
-    const cached = cachedData && cachedData.hasOwnProperty(asin) ? cachedData[asin] : null;
-
-    if (cached) {
-      item.dataset.vineIsCached = 'true';
-      item.dataset.vinePrice = cached.price;
-      // Default to true for legacy cache entries without isSeen property
-      const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
-      item.dataset.vineSeen = String(isSeen);
-
-      getHideCached((shouldHide) => {
-        const color = getPriceColorSync(cached.price);
-        const badge = createPriceBadge(cached.price, true, isSeen, color);
-        item.appendChild(badge);
-        applyColorFilter(item, color);
-      });
-    } else {
-      const fetchId = `${asin}-${Date.now()}`;
-      activeFetches.set(asin, fetchId);
-
-      fetchPrice(url, asin, (priceData) => {
-        if (activeFetches.get(asin) === fetchId) {
-          activeFetches.delete(asin);
-          if (priceData) {
-            const color = getPriceColorSync(priceData.price);
-
-            // Store price on item
-            item.dataset.vinePrice = priceData.price;
-
-            // Calculate visibility (isSeen) based on filters
-            // Check if item would be visible
-            getColorFilter((filter) => {
-              // Note: Pre-release logic is checked in applyColorFilter but for caching 'seen' status,
-              // we assume if the color logic passes, it's potentially seen.
-              // We'll cache it regardless, but mark isSeen accordingly.
-              const isVisible = filter[color];
-
-              // Always cache the price, but track if it was seen (visible)
-              setCachedPrice(asin, priceData.price, isVisible);
-
-              // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly), 
-              // even though we cache it as seen for next time.
-              item.dataset.vineSeen = 'false';
-            });
-
-            const badge = createPriceBadge(priceData.price, false, false, color);
-            item.appendChild(badge);
-            applyColorFilter(item, color);
-          } else if (isPreReleaseItem(item)) {
-            // Pre-release items: mark as seen immediately to avoid blocking auto-advance
-            item.dataset.vineSeen = 'true';
-            item.dataset.vinePrice = '0';
-            setCachedPrice(asin, 0, true);
-          }
-        }
-      });
-    }
-  }
 
   function processBatch(items, isInitialLoad = false) {
     if (items.length === 0) return;
@@ -775,88 +691,65 @@
     }
 
     autoAdvanceCheckTimeout = setTimeout(() => {
-      getAutoAdvance((shouldAutoAdvance) => {
-        if (!shouldAutoAdvance) {
-          return;
-        }
+      // Synchronous read: don't do any DOM work if auto-advance is disabled.
+      if (!autoAdvanceLoaded) {
+        getAutoAdvance(() => checkAndAutoAdvance());
+        return;
+      }
+      if (!autoAdvance) return;
 
-        const selectors = [
-          '.vvp-item-tile',
-          '[data-recommendation-id]',
-          '.a-section.a-spacing-base'
-        ];
+      const allItems = findVineItems();
+      if (allItems.length === 0) return;
 
-        let allItems = [];
-        for (const selector of selectors) {
-          const found = document.querySelectorAll(selector);
-          if (found.length > 0) {
-            allItems = Array.from(found);
-            break;
-          }
-        }
+      const allHidden = allItems.every(item => item.dataset.vineHidden === 'true');
+      if (!allHidden) return;
 
-        if (allItems.length === 0) {
-          return;
-        }
+      const nextButton = findPageLink(CONFIG.NEXT_PAGE_SELECTORS);
+      if (nextButton && !nextButton.parentElement.classList.contains('a-disabled')) {
+        console.log('All items hidden, auto-advancing to next page...');
+        nextButton.click();
+      } else {
+        console.log('All items hidden but no next page available');
+      }
+    }, 1000);
+  }
 
-        // Check if all items are hidden (by any filter)
-        const allHidden = allItems.every(item => {
-          return item.dataset.vineHidden === 'true';
-        });
+  function findVineItems() {
+    for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
+      const found = document.querySelectorAll(selector);
+      if (found.length > 0) return Array.from(found);
+    }
+    return [];
+  }
 
-        if (allHidden) {
-          // Find the next page button and click it
-          const nextButton = document.querySelector('li.a-last a') ||
-            document.querySelector('.a-pagination .a-last a') ||
-            document.querySelector('a[aria-label="Next page"]') ||
-            document.querySelector('.a-pagination li:last-child:not(.a-disabled) a');
-
-          if (nextButton && !nextButton.parentElement.classList.contains('a-disabled')) {
-            console.log('All items hidden, auto-advancing to next page...');
-            nextButton.click();
-          } else {
-            console.log('All items hidden but no next page available');
-          }
-        }
-      });
-    }, 1000); // Wait 1 second after last update
+  function findPageLink(selectors) {
+    return findFirstMatch(document, selectors);
   }
 
   function processVineItems(isInitialLoad = false) {
-    const selectors = [
-      '.vvp-item-tile',
-      '[data-recommendation-id]',
-      '.a-section.a-spacing-base'
-    ];
-
     let items = [];
 
-    // Try cached selector first for performance
     if (cachedSelector) {
       const found = document.querySelectorAll(cachedSelector);
       if (found.length > 0) {
         items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
       } else {
-        // Cached selector no longer works, reset it
         cachedSelector = null;
       }
     }
 
-    // If no cached selector or it didn't work, try all selectors
     if (items.length === 0) {
-      for (const selector of selectors) {
+      for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
         const found = document.querySelectorAll(selector);
         if (found.length > 0) {
           items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
-          cachedSelector = selector; // Cache the working selector
+          cachedSelector = selector;
           break;
         }
       }
     }
 
-    if (items.length > 0) {
-      processBatch(items, isInitialLoad);
-    }
+    if (items.length > 0) processBatch(items, isInitialLoad);
   }
 
   // Mutation observer
@@ -911,28 +804,26 @@
     });
   }
 
-  // Color Filter UI
-  function createColorFilterUI() {
-    // Check if filter already exists
-    if (document.getElementById('vine-color-filter-wrapper')) {
-      return;
-    }
+  let colorFilterRetries = 0;
+  let reviewGenRetries = 0;
+  const MAX_UI_INJECT_RETRIES = 10;
 
-    // Attempt to find the search bar container to inject filters natively
-    // We look for the container that holds the search input, usually in the browse toolbar
+  function createColorFilterUI() {
+    if (document.getElementById('vine-color-filter-wrapper')) return;
+
     const searchContainer = document.querySelector('.vvp-search-container') || document.querySelector('#vvp-search-box') || document.querySelector('.vvp-header-search-container');
     const searchForm = document.querySelector('#vvp-search-form') || document.querySelector('#search-vine-items-form');
-
-    // Fallback: Find the main content area
     const contentArea = document.querySelector('.vvp-items-grid') ||
       document.querySelector('.vvp-body') ||
       document.querySelector('#vvp-items-grid');
 
     if (!contentArea && !searchContainer) {
-      // Retry later if nothing found
-      setTimeout(createColorFilterUI, 500);
+      if (++colorFilterRetries <= MAX_UI_INJECT_RETRIES) {
+        setTimeout(createColorFilterUI, 500);
+      }
       return;
     }
+    colorFilterRetries = 0;
 
     // Wrapper for the filters
     const filterWrapper = document.createElement('div');
@@ -968,7 +859,10 @@
       flex-wrap: wrap;
     `;
 
-    const currentFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
+    // Prime memoized state — these read from storage exactly once.
+    let currentFilter;
+    getColorFilter((f) => { currentFilter = f; });
+    getHideCached(() => {});
 
     // Hide Cached Items Toggle
     const hideCachedWrapper = document.createElement('label');
@@ -985,7 +879,7 @@
     const hideCachedCheckbox = document.createElement('input');
     hideCachedCheckbox.type = 'checkbox';
     hideCachedCheckbox.id = 'vine-filter-hide-cached';
-    hideCachedCheckbox.checked = getStorage(CONFIG.HIDE_CACHED_KEY, false);
+    hideCachedCheckbox.checked = hideCached;
     hideCachedCheckbox.style.cssText = `
       margin-right: 6px;
       cursor: pointer;
@@ -1013,7 +907,6 @@
 
     filterContainer.appendChild(hideCachedWrapper);
 
-    // Create checkboxes for each color (removed Pre-Release)
     const colors = [
       { name: 'purple', label: '🟣 Purple ($0)', color: '#8b5cf6' },
       { name: 'green', label: '🟢 Green ($90+)', color: '#10b981' },
@@ -1048,11 +941,8 @@
       labelText.textContent = colorLabel;
 
       checkbox.addEventListener('change', (e) => {
-        const newFilter = getStorage(CONFIG.COLOR_FILTER_KEY, { green: true, yellow: true, red: true, purple: true });
-        newFilter[name] = e.target.checked;
-        setStorage(CONFIG.COLOR_FILTER_KEY, newFilter);
-        colorFilter = newFilter;
-        colorFilterLoaded = true;
+        colorFilter[name] = e.target.checked;
+        setStorage(CONFIG.COLOR_FILTER_KEY, colorFilter);
         applyColorFilterToAllItems();
       });
 
@@ -1150,39 +1040,24 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
 
     try {
-      const data = await new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: 'POST',
-          url: 'https://api.openai.com/v1/chat/completions',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          data: JSON.stringify({
-            model: 'gpt-3.5-turbo',
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt }
-            ],
-            temperature: 0.7,
-            max_tokens: 500
-          }),
-          onload: (response) => {
-            if (response.status >= 200 && response.status < 300) {
-              resolve(JSON.parse(response.responseText));
-            } else {
-              try {
-                const error = JSON.parse(response.responseText);
-                reject(new Error(error.error?.message || 'API request failed'));
-              } catch (e) {
-                reject(new Error(`API request failed: ${response.status}`));
-              }
-            }
-          },
-          onerror: (error) => reject(new Error('Network error calling OpenAI API'))
-        });
+      const response = await gmFetch({
+        method: 'POST',
+        url: 'https://api.openai.com/v1/chat/completions',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        data: JSON.stringify({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 500
+        })
       });
-
+      const data = JSON.parse(response.responseText);
       return data.choices[0].message.content.trim();
     } catch (error) {
       console.error('Error generating review:', error);
@@ -1238,11 +1113,13 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
     }
 
     if (!reviewArea) {
-      // Retry after a delay
-      console.log('[Vine Tools] Review generator: waiting for page elements...');
-      setTimeout(createReviewGeneratorUI, 1000);
+      if (++reviewGenRetries <= MAX_UI_INJECT_RETRIES) {
+        console.log('[Vine Tools] Review generator: waiting for page elements...');
+        setTimeout(createReviewGeneratorUI, 1000);
+      }
       return;
     }
+    reviewGenRetries = 0;
 
     console.log('[Vine Tools] Review generator: inserting UI', {
       isReviewPage,
@@ -1252,133 +1129,39 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
     const container = document.createElement('div');
     container.id = 'vine-review-generator';
-    container.style.cssText = `
-      margin: 20px 0;
-      padding: 20px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      border-radius: 12px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-      position: relative;
-    `;
+    container.className = 'vine-review-panel';
 
     container.innerHTML = `
-      <button id="vine-close-generator" style="
-        position: absolute;
-        top: 12px;
-        right: 12px;
-        background: rgba(255, 255, 255, 0.2);
-        color: white;
-        border: none;
-        border-radius: 50%;
-        width: 32px;
-        height: 32px;
-        font-size: 20px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.2s ease;
-      " title="Close">✕</button>
-      <h3 style="margin: 0 0 16px 0; color: white; font-size: 18px; font-weight: 600;">
-        🤖 AI Review Generator
-      </h3>
-      <div style="background: white; padding: 16px; border-radius: 8px;">
-        <div style="margin-bottom: 12px;">
-          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
-            Star Rating:
-          </label>
-          <select id="vine-review-stars" style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-            <option value="5">⭐⭐⭐⭐⭐ (5 stars)</option>
-            <option value="4">⭐⭐⭐⭐ (4 stars)</option>
-            <option value="3">⭐⭐⭐ (3 stars)</option>
-            <option value="2">⭐⭐ (2 stars)</option>
-            <option value="1">⭐ (1 star)</option>
-          </select>
+      <div class="vine-review-header">
+        <h3 class="vine-review-title">🤖 AI Review Generator</h3>
+        <button type="button" id="vine-close-generator" class="vine-review-close" aria-label="Close AI review generator">✕</button>
+      </div>
+      <div class="vine-review-body-wrap">
+        <label class="vine-review-label" for="vine-review-stars">Star Rating</label>
+        <select id="vine-review-stars" class="vine-review-input">
+          <option value="5">⭐⭐⭐⭐⭐ (5 stars)</option>
+          <option value="4">⭐⭐⭐⭐ (4 stars)</option>
+          <option value="3">⭐⭐⭐ (3 stars)</option>
+          <option value="2">⭐⭐ (2 stars)</option>
+          <option value="1">⭐ (1 star)</option>
+        </select>
+
+        <label class="vine-review-label" for="vine-review-comments">Your Comments <span class="vine-review-hint">(optional)</span></label>
+        <textarea id="vine-review-comments" class="vine-review-input vine-review-textarea" placeholder="e.g. Used it for 2 weeks, great battery, too heavy for daily use"></textarea>
+
+        <button type="button" id="vine-generate-review-btn" class="vine-btn-primary vine-review-generate">Generate Review</button>
+
+        <div id="vine-review-output" class="vine-review-output" style="display: none;" role="region" aria-label="Generated review">
+          <label class="vine-review-label">Review Title</label>
+          <div id="vine-review-title" class="vine-review-result"></div>
+          <button type="button" id="vine-copy-title-btn" class="vine-btn-secondary vine-review-copy" aria-label="Copy review title to clipboard">📋 Copy Title</button>
+
+          <label class="vine-review-label">Review Body</label>
+          <div id="vine-review-body" class="vine-review-result vine-review-result-body"></div>
+          <button type="button" id="vine-copy-body-btn" class="vine-btn-secondary vine-review-copy" aria-label="Copy review body to clipboard">📋 Copy Review Body</button>
         </div>
-        <div style="margin-bottom: 12px;">
-          <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
-            Your Comments (optional):
-          </label>
-          <textarea id="vine-review-comments" placeholder="Add any specific points you want to mention..." 
-            style="width: 100%; min-height: 80px; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px; font-family: inherit; resize: vertical;"></textarea>
-          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
-            e.g., "Used it for 2 weeks", "Great battery life", "Too heavy for daily use"
-          </div>
-        </div>
-        <button id="vine-generate-review-btn" style="
-          width: 100%;
-          padding: 12px;
-          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-          color: white;
-          border: none;
-          border-radius: 8px;
-          font-size: 16px;
-          font-weight: 600;
-          cursor: pointer;
-          margin-bottom: 12px;
-        ">Generate Review</button>
-        <div id="vine-review-output" style="display: none;">
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
-              Review Title:
-            </label>
-            <div id="vine-review-title" style="
-              padding: 12px;
-              background: #f9fafb;
-              border: 2px solid #e5e7eb;
-              border-radius: 6px;
-              font-size: 16px;
-              font-weight: 600;
-              line-height: 1.4;
-              margin-bottom: 8px;
-            "></div>
-            <button id="vine-copy-title-btn" style="
-              width: 100%;
-              padding: 10px;
-              background: #667eea;
-              color: white;
-              border: none;
-              border-radius: 6px;
-              font-size: 14px;
-              font-weight: 600;
-              cursor: pointer;
-              margin-bottom: 12px;
-            ">📋 Copy Title</button>
-          </div>
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: #374151;">
-              Review Body:
-            </label>
-            <div id="vine-review-body" style="
-              padding: 12px;
-              background: #f9fafb;
-              border: 2px solid #e5e7eb;
-              border-radius: 6px;
-              white-space: pre-wrap;
-              font-size: 14px;
-              line-height: 1.6;
-              margin-bottom: 8px;
-            "></div>
-            <button id="vine-copy-body-btn" style="
-              width: 100%;
-              padding: 10px;
-              background: #667eea;
-              color: white;
-              border: none;
-              border-radius: 6px;
-              font-size: 14px;
-              font-weight: 600;
-              cursor: pointer;
-            ">📋 Copy Review Body</button>
-          </div>
-        </div>
-        <div id="vine-review-status" style="
-          display: none;
-          padding: 12px;
-          border-radius: 6px;
-          margin-top: 12px;
-          font-size: 14px;
-        "></div>
+
+        <div id="vine-review-status" class="vine-status-banner" role="status" aria-live="polite"></div>
       </div>
     `;
 
@@ -1406,28 +1189,8 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
     const bodyDiv = document.getElementById('vine-review-body');
     const statusDiv = document.getElementById('vine-review-status');
 
-    // Close button handler
-    closeBtn.addEventListener('click', () => {
-      container.style.display = 'none';
-    });
-
-    // Hover effect for close button
-    closeBtn.addEventListener('mouseover', () => {
-      closeBtn.style.background = 'rgba(255, 255, 255, 0.3)';
-    });
-    closeBtn.addEventListener('mouseout', () => {
-      closeBtn.style.background = 'rgba(255, 255, 255, 0.2)';
-    });
-
-    function showStatus(message, isError = false) {
-      statusDiv.textContent = message;
-      statusDiv.style.display = 'block';
-      statusDiv.style.background = isError ? '#fee2e2' : '#d1fae5';
-      statusDiv.style.color = isError ? '#991b1b' : '#065f46';
-      setTimeout(() => {
-        statusDiv.style.display = 'none';
-      }, 5000);
-    }
+    closeBtn.addEventListener('click', () => { container.style.display = 'none'; });
+    const showStatus = makeShowStatus(statusDiv, 5000);
 
     generateBtn.addEventListener('click', async () => {
       const stars = parseInt(starsSelect.value);
@@ -1456,50 +1219,25 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
           const productUrl = `https://www.amazon.com/dp/${asin}`;
 
           try {
-            const html = await new Promise((resolve, reject) => {
-              GM_xmlhttpRequest({
-                method: 'GET',
-                url: productUrl,
-                onload: (response) => {
-                  if (response.status === 200) {
-                    resolve(response.responseText);
-                  } else {
-                    reject(new Error(`HTTP ${response.status}`));
-                  }
-                },
-                onerror: (error) => reject(new Error('Network error fetching product page'))
-              });
-            });
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-
-            // Extract description from the fetched page
-            const descElement = doc.querySelector('#feature-bullets') ||
-              doc.querySelector('[data-feature-name="featurebullets"]') ||
-              doc.querySelector('#productDescription') ||
-              doc.querySelector('#productTitle');
-
-            if (descElement) {
-              description = descElement.textContent.trim().substring(0, 1000);
-            } else {
+            const response = await gmFetch({ method: 'GET', url: productUrl });
+            const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
+            const descElement = findFirstMatch(doc, CONFIG.PRODUCT_DESC_SELECTORS);
+            if (!descElement) {
               showStatus('Could not extract product description from product page', true);
               return;
             }
+            description = descElement.textContent.trim().substring(0, 1000);
           } catch (fetchError) {
             showStatus('Failed to fetch product details: ' + fetchError.message, true);
             return;
           }
         } else {
-          // On product detail page, get description directly
-          const descriptionElement = document.querySelector('#feature-bullets') ||
-            document.querySelector('[data-feature-name="featurebullets"]') ||
-            document.querySelector('#productDescription');
-
+          // Live product-detail page — omit #productTitle so we prefer body copy when available.
+          const descriptionElement = findFirstMatch(document, CONFIG.PRODUCT_DESC_SELECTORS.slice(0, 3));
           if (!descriptionElement) {
             showStatus('Could not find product description on this page', true);
             return;
           }
-
           description = descriptionElement.textContent.trim().substring(0, 1000);
         }
 
@@ -1583,165 +1321,99 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       }
     });
 
-    copyTitleBtn.addEventListener('click', () => {
-      const text = titleDiv.textContent;
-      navigator.clipboard.writeText(text).then(() => {
-        const originalText = copyTitleBtn.textContent;
-        copyTitleBtn.textContent = '✓ Copied!';
-        setTimeout(() => {
-          copyTitleBtn.textContent = originalText;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy title:', err);
-        showStatus('Failed to copy title', true);
+    const wireCopy = (btn, sourceEl, label) => {
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(sourceEl.textContent).then(() => {
+          const original = btn.textContent;
+          btn.textContent = '✓ Copied!';
+          btn.classList.add('vine-copied');
+          setTimeout(() => {
+            btn.textContent = original;
+            btn.classList.remove('vine-copied');
+          }, 1500);
+        }).catch(err => {
+          console.error(`Failed to copy ${label}:`, err);
+          showStatus(`Failed to copy ${label}`, true);
+        });
       });
-    });
-
-    copyBodyBtn.addEventListener('click', () => {
-      const text = bodyDiv.textContent;
-      navigator.clipboard.writeText(text).then(() => {
-        const originalText = copyBodyBtn.textContent;
-        copyBodyBtn.textContent = '✓ Copied!';
-        setTimeout(() => {
-          copyBodyBtn.textContent = originalText;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy body:', err);
-        showStatus('Failed to copy body', true);
-      });
-    });
+    };
+    wireCopy(copyTitleBtn, titleDiv, 'title');
+    wireCopy(copyBodyBtn, bodyDiv, 'body');
   }
 
   // Cloud Sync (GitHub Gist)
-  async function syncWithGitHub(token, manualTrigger = false) {
-    if (!token) {
-      throw new Error('No GitHub Token provided');
-    }
+  async function syncWithGitHub(token) {
+    if (!token) throw new Error('No GitHub Token provided');
+
+    // Ensure any debounced writes land in memoryCache before we merge with remote.
+    flushCacheUpdates();
 
     const gistFileName = 'vine_price_cache.json';
     let gistId = getStorage(CONFIG.GIST_ID_KEY, null);
-
-    // Helper to request GitHub API
-    async function githubRequest(endpoint, method = 'GET', body = null) {
-      return new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: method,
-          url: `https://api.github.com/${endpoint}`,
-          headers: {
-            'Authorization': `token ${token}`,
-            'Accept': 'application/vnd.github.v3+json',
-            'Content-Type': 'application/json'
-          },
-          data: body ? JSON.stringify(body) : null,
-          onload: (response) => {
-            if (response.status >= 200 && response.status < 300) {
-              resolve(JSON.parse(response.responseText));
-            } else {
-              reject(new Error(`GitHub API Error: ${response.status} ${response.statusText}`));
-            }
-          },
-          onerror: (error) => reject(error)
-        });
-      });
-    }
+    const gh = (endpoint, method, body) => githubRequest(token, endpoint, method, body);
 
     try {
-      // 1. Find or Create Gist
       if (!gistId) {
-        // Search for existing gist
-        const gists = await githubRequest('gists');
+        const gists = await gh('gists');
         const existingGist = gists.find(g => g.files && g.files[gistFileName]);
-
         if (existingGist) {
           gistId = existingGist.id;
         } else {
-          // Create new private gist
-          const newGist = await githubRequest('gists', 'POST', {
+          const newGist = await gh('gists', 'POST', {
             description: 'Amazon Vine Price Cache (Synced)',
             public: false,
-            files: {
-              [gistFileName]: {
-                content: JSON.stringify({})
-              }
-            }
+            files: { [gistFileName]: { content: JSON.stringify({}) } }
           });
           gistId = newGist.id;
         }
         setStorage(CONFIG.GIST_ID_KEY, gistId);
       }
 
-      // 2. Fetch Remote Cache
-      const gistData = await githubRequest(`gists/${gistId}`);
+      const gistData = await gh(`gists/${gistId}`);
       let remoteCache = {};
       const file = gistData.files && gistData.files[gistFileName];
 
       if (file) {
         if (file.truncated) {
           console.log('[Vine Sync] Remote file truncated, fetching raw content...');
-          const rawContent = await new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-              method: 'GET',
-              url: file.raw_url,
-              onload: (r) => resolve(r.responseText),
-              onerror: reject
-            });
-          });
-          remoteCache = JSON.parse(rawContent);
+          const raw = await gmFetch({ method: 'GET', url: file.raw_url });
+          remoteCache = JSON.parse(raw.responseText);
         } else {
           remoteCache = file.content ? JSON.parse(file.content) : {};
         }
       }
 
-      // 3. Merge Caches (Smart Merge)
       return new Promise((resolve) => {
         getCache((localCache) => {
           const now = Date.now();
-          const mergedCache = { ...remoteCache }; // Start with remote as base
+          const mergedCache = { ...remoteCache };
           let remoteNeedsUpdate = false;
-          let localNeedsUpdate = false;
 
-          // Process local items into the merge
           for (const [asin, localEntry] of Object.entries(localCache)) {
-            // Skip if local entry is expired
             if (now - (localEntry.timestamp || 0) > CONFIG.CACHE_DURATION) continue;
-
             const remoteEntry = mergedCache[asin];
-
-            if (!remoteEntry) {
-              // Local has it, remote doesn't -> Add to merge
+            if (!remoteEntry || (localEntry.timestamp || 0) > (remoteEntry.timestamp || 0)) {
               mergedCache[asin] = localEntry;
               remoteNeedsUpdate = true;
-            } else if ((localEntry.timestamp || 0) > (remoteEntry.timestamp || 0)) {
-              // Local is newer -> Overwrite remote in merge
-              mergedCache[asin] = localEntry;
-              remoteNeedsUpdate = true;
-            } else if ((remoteEntry.timestamp || 0) > (localEntry.timestamp || 0)) {
-              // Remote is newer -> We need to update local
-              localNeedsUpdate = true;
             }
           }
 
-          // Check if we essentially just downloaded new stuff from remote
-          if (Object.keys(mergedCache).length !== Object.keys(localCache).length) {
-            localNeedsUpdate = true;
-          }
-
-          // 4. Update Remote Gist (Only if needed)
           const finalizeSync = async () => {
             if (remoteNeedsUpdate) {
-              console.log('[Vine Sync] Pushing updates to GitHub...');
-              await githubRequest(`gists/${gistId}`, 'PATCH', {
-                files: {
-                  [gistFileName]: {
-                    content: JSON.stringify(mergedCache)
-                  }
-                }
-              });
+              const mergedJson = JSON.stringify(mergedCache);
+              // Final byte-level guard: skip PATCH if merge equals what's already on Gist.
+              if (file && !file.truncated && file.content === mergedJson) {
+                console.log('[Vine Sync] Merge matches remote — skipping PATCH.');
+              } else {
+                console.log('[Vine Sync] Pushing updates to GitHub...');
+                await gh(`gists/${gistId}`, 'PATCH', {
+                  files: { [gistFileName]: { content: mergedJson } }
+                });
+              }
             } else {
               console.log('[Vine Sync] Remote is up to date.');
             }
 
-            // 5. Update Local Storage
             setCache(mergedCache, () => {
               setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
               resolve({ success: true, count: Object.keys(mergedCache).length });
@@ -1750,7 +1422,6 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
           finalizeSync().catch(err => {
             console.error('Sync finalize failed:', err);
-            // Even if remote push fails, we should save what we pulled locally
             setCache(mergedCache);
             resolve({ success: false, error: err });
           });
@@ -1764,69 +1435,33 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
   }
 
   // Sync Saved Searches with GitHub Gist
-  async function syncSearchesWithGitHub(token, manualTrigger = false) {
-    if (!token) {
-      throw new Error('No GitHub Token provided');
-    }
+  async function syncSearchesWithGitHub(token) {
+    if (!token) throw new Error('No GitHub Token provided');
 
     const gistFileName = 'vine_saved_searches.json';
     let gistId = getStorage(CONFIG.GIST_SEARCHES_ID_KEY, null);
-
-    // Helper to request GitHub API
-    async function githubRequest(endpoint, method = 'GET', body = null) {
-      return new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: method,
-          url: `https://api.github.com/${endpoint}`,
-          headers: {
-            'Authorization': `token ${token}`,
-            'Accept': 'application/vnd.github.v3+json',
-            'Content-Type': 'application/json'
-          },
-          data: body ? JSON.stringify(body) : null,
-          onload: (response) => {
-            if (response.status >= 200 && response.status < 300) {
-              resolve(JSON.parse(response.responseText));
-            } else {
-              reject(new Error(`GitHub API Error: ${response.status} ${response.statusText}`));
-            }
-          },
-          onerror: (error) => reject(error)
-        });
-      });
-    }
+    const gh = (endpoint, method, body) => githubRequest(token, endpoint, method, body);
 
     try {
-      // 1. Find or Create Gist for Saved Searches
       if (!gistId) {
-        // Search for existing gist
-        const gists = await githubRequest('gists');
+        const gists = await gh('gists');
         const existingGist = gists.find(g => g.files && g.files[gistFileName]);
 
         if (existingGist) {
           gistId = existingGist.id;
         } else {
-          // Create new private gist with timestamp wrapper
-          const initialData = {
-            timestamp: Date.now(),
-            searches: []
-          };
-          const newGist = await githubRequest('gists', 'POST', {
+          const initialData = { timestamp: Date.now(), searches: [] };
+          const newGist = await gh('gists', 'POST', {
             description: 'Amazon Vine Saved Searches (Synced)',
             public: false,
-            files: {
-              [gistFileName]: {
-                content: JSON.stringify(initialData)
-              }
-            }
+            files: { [gistFileName]: { content: JSON.stringify(initialData) } }
           });
           gistId = newGist.id;
         }
         setStorage(CONFIG.GIST_SEARCHES_ID_KEY, gistId);
       }
 
-      // 2. Fetch Remote Searches
-      const gistData = await githubRequest(`gists/${gistId}`);
+      const gistData = await gh(`gists/${gistId}`);
       let remoteData = { timestamp: 0, searches: [] };
       if (gistData.files && gistData.files[gistFileName]) {
         try {
@@ -1895,18 +1530,13 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, remoteData.timestamp);
       }
 
-      // 6. Update Remote Gist if needed
       if (shouldUpdateRemote) {
         const updateData = {
           timestamp: localTimestamp || Date.now(),
           searches: finalSearches
         };
-        await githubRequest(`gists/${gistId}`, 'PATCH', {
-          files: {
-            [gistFileName]: {
-              content: JSON.stringify(updateData)
-            }
-          }
+        await gh(`gists/${gistId}`, 'PATCH', {
+          files: { [gistFileName]: { content: JSON.stringify(updateData) } }
         });
       }
 
@@ -1970,6 +1600,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
       settingsLi.appendChild(settingsLink);
       headerContainer.appendChild(settingsLi);
+      document.body.classList.add('vine-has-header-link');
       return true;
     }
 
@@ -1995,14 +1626,14 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       document.body.appendChild(fab);
     }
 
-    let settingsModal = null;
-
     openSettingsModal = function () {
       if (settingsModal) {
-        settingsModal.remove();
-        settingsModal = null;
+        closeSettingsModal();
         return;
       }
+
+      settingsModalPrevFocus = document.activeElement;
+      document.body.style.overflow = 'hidden';
 
       settingsModal = document.createElement('div');
       settingsModal.id = 'vine-settings-modal';
@@ -2012,7 +1643,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         left: 0;
         right: 0;
         bottom: 0;
-        background: rgba(0, 0, 0, 0.7);
+        background: rgba(0, 0, 0, 0.6);
         z-index: 10001;
         display: flex;
         align-items: center;
@@ -2023,17 +1654,21 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
       const dialog = document.createElement('div');
       dialog.className = 'vine-settings-dialog';
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-labelledby', 'vine-modal-title');
       dialog.style.cssText = `
-        background: white;
-        border-radius: 12px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        background: #fff;
+        border: 1px solid #D5D9D9;
+        border-radius: 8px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
         max-width: 600px;
         width: 100%;
         max-height: 90vh;
         overflow-y: auto;
         position: relative;
         margin: auto;
-        padding: 24px;
+        padding: 20px;
       `;
 
       let thresholds = getStorage(CONFIG.THRESHOLDS_KEY, CONFIG.DEFAULT_THRESHOLDS);
@@ -2053,86 +1688,22 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       if (thresholds.YELLOW_MIN == null) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
       if (thresholds.RED_MAX == null) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
 
-      const hideCached = getStorage(CONFIG.HIDE_CACHED_KEY, false);
       const autoAdvanceEnabled = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
 
       dialog.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-          <h2 style="margin: 0; font-size: 24px; color: #1f2937;">Vine Tools <span style="font-size: 0.6em; color: #6b7280; font-weight: normal;">(v${GM_info.script.version})</span></h2>
-          <a href="https://www.buymeacoffee.com/aporzio" target="_blank" style="
-            display: flex !important;
-            align-items: center !important;
-            background-color: #40DCA5 !important;
-            color: #ffffff !important;
-            padding: 6px 12px !important;
-            border-radius: 5px !important;
-            text-decoration: none !important;
-            font-family: 'Cookie', cursive, sans-serif !important;
-            font-size: 18px !important;
-            font-weight: 500 !important;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
-            opacity: 1 !important;
-            visibility: visible !important;
-          ">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;">
-              <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path>
-              <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path>
-              <line x1="6" y1="1" x2="6" y2="4"></line>
-              <line x1="10" y1="1" x2="10" y2="4"></line>
-              <line x1="14" y1="1" x2="14" y2="4"></line>
-            </svg>
-            <span style="color: #ffffff !important; text-shadow: 0 1px 2px rgba(0,0,0,0.1) !important;">Buy me a coffee</span>
-          </a>
+        <div class="vine-modal-header">
+          <h2 id="vine-modal-title" class="vine-modal-title">Vine Tools <span class="vine-modal-version">v${GM_info.script.version}</span></h2>
+          <button type="button" id="vine-modal-close" class="vine-modal-close-btn" aria-label="Close settings">✕</button>
         </div>
-        
-        <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb;">
-          <button id="tab-searches" class="vine-tab" style="
-            flex: 1;
-            padding: 12px;
-            background: none;
-            border: none;
-            border-bottom: 3px solid transparent;
-            font-size: 14px;
-            font-weight: 600;
-            color: #6b7280;
-            cursor: pointer;
-          ">Saved Searches</button>
-          <button id="tab-sync" class="vine-tab" style="
-            flex: 1;
-            padding: 12px;
-            background: none;
-            border: none;
-            border-bottom: 3px solid transparent;
-            font-size: 14px;
-            font-weight: 600;
-            color: #6b7280;
-            cursor: pointer;
-          ">Cloud Sync</button>
-          <button id="tab-price" class="vine-tab" style="
-            flex: 1;
-            padding: 12px;
-            background: none;
-            border: none;
-            border-bottom: 3px solid transparent;
-            font-size: 14px;
-            font-weight: 600;
-            color: #6b7280;
-            cursor: pointer;
-          ">Price Settings</button>
-          <button id="tab-shortcuts" class="vine-tab" style="
-            flex: 1;
-            padding: 12px;
-            background: none;
-            border: none;
-            border-bottom: 3px solid transparent;
-            font-size: 14px;
-            font-weight: 600;
-            color: #6b7280;
-            cursor: pointer;
-          ">Shortcuts</button>
+
+        <div class="vine-tabs" role="tablist">
+          <button type="button" id="tab-searches" class="vine-tab" role="tab">Saved Searches</button>
+          <button type="button" id="tab-sync" class="vine-tab" role="tab">Cloud Sync</button>
+          <button type="button" id="tab-price" class="vine-tab" role="tab">Price Settings</button>
+          <button type="button" id="tab-shortcuts" class="vine-tab" role="tab">Shortcuts</button>
         </div>
 
         <div id="content-price" class="vine-tab-content" style="display: none;">
@@ -2185,35 +1756,14 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
               placeholder="sk-..." 
               style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
             <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">
-              Required for AI review generation. Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: #667eea;">platform.openai.com</a>
+              Required for AI review generation. Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
             </div>
           </div>
         </div>
 
         <div style="margin-bottom: 24px;">
-          <button id="vine-save-btn" style="
-            width: 100%;
-            padding: 12px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            margin-bottom: 8px;
-          ">Save Settings</button>
-          <button id="vine-clear-cache-btn" style="
-            width: 100%;
-            padding: 12px;
-            background: #ef4444;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-          ">Clear Cache</button>
+          <button type="button" id="vine-save-btn" class="vine-btn-primary" style="width: 100%; margin-bottom: 8px;">Save Settings</button>
+          <button type="button" id="vine-clear-cache-btn" class="vine-btn-danger" style="width: 100%;">Clear Cache</button>
         </div>
         </div>
 
@@ -2221,19 +1771,9 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
           <div style="margin-bottom: 20px;">
             <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">Add New Search</label>
             <div style="display: flex; gap: 8px;">
-              <input type="text" id="new-search-term" placeholder="Enter search term (e.g., 'laptop', 'headphones')" 
-                style="flex: 1; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
-              <button id="add-search-btn" style="
-                padding: 8px 16px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 600;
-                cursor: pointer;
-                white-space: nowrap;
-              ">Add Search</button>
+              <input type="text" id="new-search-term" placeholder="Enter search term (e.g. 'laptop', 'headphones')"
+                style="flex: 1; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+              <button type="button" id="add-search-btn" class="vine-btn-primary" style="white-space: nowrap;">Add Search</button>
             </div>
             <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">
               Saved searches will appear as quick links below
@@ -2261,31 +1801,15 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
                 placeholder="ghp_..." 
                 style="width: 100%; padding: 8px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px;">
               <div style="font-size: 11px; color: #9ca3af; margin-top: 4px;">
-                Token requires <strong>gist</strong> permission. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Vine%20Price%20Scaler" target="_blank" style="color: #667eea;">Generate Token</a>
+                Token requires <strong>gist</strong> permission. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Vine%20Price%20Scaler" target="_blank" style="color: var(--vine-link);">Generate Token</a>
               </div>
             </div>
 
             <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px;">
-              <button id="vine-sync-btn" style="
-                flex: 1;
-                padding: 10px;
-                background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 600;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 6px;
-              ">
-                <span>🔄</span> Sync Now
-              </button>
+              <button type="button" id="vine-sync-btn" class="vine-btn-primary" style="flex: 1;">🔄 Sync Now</button>
             </div>
 
-            <div id="vine-sync-status" style="font-size: 12px; color: #6b7280; text-align: center;">
+            <div id="vine-sync-status" role="status" aria-live="polite" style="font-size: 12px; color: var(--vine-fg-muted); text-align: center;">
               ${lastSyncTime ? `Last synced: ${new Date(lastSyncTime).toLocaleString()}` : 'Never synced'}
             </div>
           </div>
@@ -2364,19 +1888,14 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
           </div>
         </div>
 
-        <div id="vine-status" style="
-          padding: 12px;
-          border-radius: 8px;
-          margin-top: 12px;
-          display: none;
-          font-size: 14px;
-        "></div>
+        <div id="vine-status" class="vine-status-banner" role="status" aria-live="polite"></div>
       `;
 
 
 
       const saveBtn = dialog.querySelector('#vine-save-btn');
       const clearCacheBtn = dialog.querySelector('#vine-clear-cache-btn');
+      const closeBtn = dialog.querySelector('#vine-modal-close');
       const statusDiv = dialog.querySelector('#vine-status');
       const greenMinInput = dialog.querySelector('#vine-green-min');
       const yellowMinInput = dialog.querySelector('#vine-yellow-min');
@@ -2386,15 +1905,8 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       const openaiKeyInput = dialog.querySelector('#vine-openai-key');
       const githubTokenInput = dialog.querySelector('#vine-github-token');
 
-      function showStatus(message, isError = false) {
-        statusDiv.textContent = message;
-        statusDiv.style.display = 'block';
-        statusDiv.style.background = isError ? '#fee2e2' : '#d1fae5';
-        statusDiv.style.color = isError ? '#991b1b' : '#065f46';
-        setTimeout(() => {
-          statusDiv.style.display = 'none';
-        }, 3000);
-      }
+      const showStatus = makeShowStatus(statusDiv, 3000);
+      closeBtn.addEventListener('click', closeSettingsModal);
 
       saveBtn.addEventListener('click', () => {
         const greenMin = parseFloat(greenMinInput.value);
@@ -2454,13 +1966,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         // Check if we should auto-advance after settings change
         checkAndAutoAdvance();
 
-        // Close the modal after a brief delay to show the success message
-        setTimeout(() => {
-          if (settingsModal) {
-            settingsModal.remove();
-            settingsModal = null;
-          }
-        }, 800);
+        setTimeout(() => { if (settingsModal) closeSettingsModal(); }, 800);
       });
 
       // Tab switching
@@ -2474,33 +1980,23 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       const contentSync = dialog.querySelector('#content-sync');
       const contentShortcuts = dialog.querySelector('#content-shortcuts');
 
+      const tabMap = {
+        price: [tabPrice, contentPrice],
+        searches: [tabSearches, contentSearches],
+        sync: [tabSync, contentSync],
+        shortcuts: [tabShortcuts, contentShortcuts]
+      };
+
       function switchTab(tab) {
-        const tabs = [tabPrice, tabSearches, tabSync, tabShortcuts];
-        const contents = [contentPrice, contentSearches, contentSync, contentShortcuts];
-
-        tabs.forEach(t => {
-          t.style.borderBottomColor = 'transparent';
-          t.style.color = '#6b7280';
+        Object.values(tabMap).forEach(([t, c]) => {
+          t.classList.remove('vine-tab-active');
+          t.setAttribute('aria-selected', 'false');
+          c.style.display = 'none';
         });
-        contents.forEach(c => c.style.display = 'none');
-
-        if (tab === 'price') {
-          tabPrice.style.borderBottomColor = '#667eea';
-          tabPrice.style.color = '#667eea';
-          contentPrice.style.display = 'block';
-        } else if (tab === 'searches') {
-          tabSearches.style.borderBottomColor = '#667eea';
-          tabSearches.style.color = '#667eea';
-          contentSearches.style.display = 'block';
-        } else if (tab === 'sync') {
-          tabSync.style.borderBottomColor = '#667eea';
-          tabSync.style.color = '#667eea';
-          contentSync.style.display = 'block';
-        } else if (tab === 'shortcuts') {
-          tabShortcuts.style.borderBottomColor = '#667eea';
-          tabShortcuts.style.color = '#667eea';
-          contentShortcuts.style.display = 'block';
-        }
+        const [activeTab, activeContent] = tabMap[tab] || tabMap.searches;
+        activeTab.classList.add('vine-tab-active');
+        activeTab.setAttribute('aria-selected', 'true');
+        activeContent.style.display = 'block';
       }
 
       tabPrice.addEventListener('click', () => { switchTab('price'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'price'); });
@@ -2515,7 +2011,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         const token = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
         if (token) {
           try {
-            await syncSearchesWithGitHub(token, false);
+            await syncSearchesWithGitHub(token);
           } catch (error) {
             console.error('Background search sync failed:', error);
             // Silent fail - don't disrupt user experience
@@ -2542,8 +2038,10 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
         try {
           // Sync both cache and searches
-          const cacheResult = await syncWithGitHub(token, true);
-          const searchesResult = await syncSearchesWithGitHub(token, true);
+          const [cacheResult, searchesResult] = await Promise.all([
+            syncWithGitHub(token),
+            syncSearchesWithGitHub(token)
+          ]);
 
           showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches)`);
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
@@ -2565,146 +2063,175 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       const newSearchTerm = dialog.querySelector('#new-search-term');
       const searchesList = dialog.querySelector('#saved-searches-list');
 
+      function persistSearches(searches, statusMsg) {
+        setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
+        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
+        renderSearches();
+        if (statusMsg) showStatus(statusMsg);
+        syncSearchesInBackground();
+      }
+
+      // Focus to restore after a re-render (e.g. after drag-drop so the dragged row stays focused).
+      let focusAfterRender = null;
+
       function renderSearches() {
         const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+        searchesList.replaceChildren();
 
         if (searches.length === 0) {
-          searchesList.innerHTML = '<div style="padding: 20px; text-align: center; color: #9ca3af; background: #f9fafb; border-radius: 6px;">No saved searches yet. Add one above!</div>';
+          const empty = document.createElement('div');
+          empty.className = 'vine-search-empty';
+          empty.textContent = "No saved searches. Type a term above (e.g. 'usb-c hub') and press Enter to save a one-click shortcut.";
+          searchesList.appendChild(empty);
           return;
         }
 
-        searchesList.innerHTML = searches.map((search, index) => `
-          <div style="display: flex; gap: 8px; align-items: center; padding: 10px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
-            <div style="display: flex; flex-direction: column; gap: 4px;">
-              <button data-search-index="${index}" class="search-move-up-btn" style="
-                padding: 4px 8px;
-                background: #6b7280;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 10px;
-                cursor: pointer;
-                ${index === 0 ? 'opacity: 0.3; cursor: not-allowed;' : ''}
-              " ${index === 0 ? 'disabled' : ''}>▲</button>
-              <button data-search-index="${index}" class="search-move-down-btn" style="
-                padding: 4px 8px;
-                background: #6b7280;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 10px;
-                cursor: pointer;
-                ${index === searches.length - 1 ? 'opacity: 0.3; cursor: not-allowed;' : ''}
-              " ${index === searches.length - 1 ? 'disabled' : ''}>▼</button>
-            </div>
-            <button data-search-index="${index}" class="search-go-btn" style="
-              flex: 1;
-              padding: 8px 12px;
-              background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-              color: white;
-              border: none;
-              border-radius: 6px;
-              font-size: 14px;
-              font-weight: 600;
-              cursor: pointer;
-              text-align: left;
-            ">${escapeHtml(search.name)}</button>
-            <button data-search-index="${index}" class="search-edit-btn" style="
-              padding: 8px 12px;
-              background: #f59e0b;
-              color: white;
-              border: none;
-              border-radius: 6px;
-              font-size: 12px;
-              cursor: pointer;
-            ">✏️</button>
-            <button data-search-index="${index}" class="search-delete-btn" style="
-              padding: 8px 12px;
-              background: #ef4444;
-              color: white;
-              border: none;
-              border-radius: 6px;
-              font-size: 12px;
-              cursor: pointer;
-            ">🗑️</button>
-          </div>
-        `).join('');
+        searches.forEach((search, index) => {
+          searchesList.appendChild(renderSearchRow(search, index, searches.length));
+        });
 
+        if (focusAfterRender !== null) {
+          const target = searchesList.querySelector(`.vine-search-row[data-index="${focusAfterRender}"] .vine-search-go`);
+          if (target) target.focus();
+          focusAfterRender = null;
+        }
       }
 
-      // Single delegated listener for all search list actions
-      searchesList.addEventListener('click', async (e) => {
-        const btn = e.target.closest('[data-search-index]');
-        if (!btn) return;
-        const index = parseInt(btn.dataset.searchIndex);
-        const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+      function renderSearchRow(search, index, total) {
+        const row = document.createElement('div');
+        row.className = 'vine-search-row';
+        row.dataset.index = String(index);
+        row.draggable = true;
 
-        if (btn.classList.contains('search-go-btn')) {
-          const search = searches[index];
-          if (search) {
-            window.location.href = `https://www.amazon.com/vine/vine-items?search=${encodeURIComponent(search.term)}`;
+        const grip = document.createElement('span');
+        grip.className = 'vine-search-grip';
+        grip.textContent = '⋮⋮';
+        grip.setAttribute('aria-hidden', 'true');
+        row.appendChild(grip);
+
+        const goBtn = document.createElement('button');
+        goBtn.type = 'button';
+        goBtn.className = 'vine-search-go';
+        goBtn.textContent = search.name;
+        goBtn.setAttribute('aria-label', `Run search: ${search.name}`);
+        goBtn.addEventListener('click', () => {
+          window.location.href = `https://www.amazon.com/vine/vine-items?search=${encodeURIComponent(search.term)}`;
+        });
+        row.appendChild(goBtn);
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'vine-search-edit';
+        editBtn.textContent = '✏️';
+        editBtn.setAttribute('aria-label', `Rename "${search.name}"`);
+        editBtn.addEventListener('click', () => beginRename(row, index));
+        row.appendChild(editBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'vine-search-delete';
+        deleteBtn.textContent = '🗑️';
+        deleteBtn.setAttribute('aria-label', `Delete "${search.name}"`);
+        let armed = false;
+        let disarmTimer = null;
+        deleteBtn.addEventListener('click', () => {
+          if (!armed) {
+            armed = true;
+            deleteBtn.textContent = '⚠️ Confirm?';
+            deleteBtn.classList.add('armed');
+            if (disarmTimer) clearTimeout(disarmTimer);
+            disarmTimer = setTimeout(() => {
+              armed = false;
+              deleteBtn.textContent = '🗑️';
+              deleteBtn.classList.remove('armed');
+            }, 3000);
+            return;
           }
-        } else if (btn.classList.contains('search-edit-btn')) {
-          const search = searches[index];
-          if (search) {
-            const newName = prompt('Enter new name for this search:', search.name);
-            if (newName && newName.trim()) {
-              searches[index].name = newName.trim();
-              setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-              setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-              renderSearches();
-              showStatus('Search renamed!');
-              syncSearchesInBackground();
+          const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+          searches.splice(index, 1);
+          persistSearches(searches, 'Search deleted');
+        });
+        row.appendChild(deleteBtn);
+
+        wireDragAndDrop(row, index);
+        return row;
+      }
+
+      function beginRename(row, index) {
+        const goBtn = row.querySelector('.vine-search-go');
+        if (!goBtn) return;
+        const currentName = goBtn.textContent;
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'vine-search-rename';
+        input.value = currentName;
+        input.setAttribute('aria-label', 'Rename search');
+
+        const commit = () => {
+          const newName = input.value.trim();
+          if (newName && newName !== currentName) {
+            const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+            if (searches[index]) {
+              searches[index].name = newName;
+              persistSearches(searches, 'Search renamed');
+              return;
             }
           }
-        } else if (btn.classList.contains('search-delete-btn')) {
-          if (confirm(`Delete search "${searches[index].name}"?`)) {
-            searches.splice(index, 1);
-            setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-            setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-            renderSearches();
-            showStatus('Search deleted!');
-            syncSearchesInBackground();
-          }
-        } else if (btn.classList.contains('search-move-up-btn')) {
-          if (index > 0) {
-            [searches[index - 1], searches[index]] = [searches[index], searches[index - 1]];
-            setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-            setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-            renderSearches();
-            showStatus('Search moved up!');
-            syncSearchesInBackground();
-          }
-        } else if (btn.classList.contains('search-move-down-btn')) {
-          if (index < searches.length - 1) {
-            [searches[index], searches[index + 1]] = [searches[index + 1], searches[index]];
-            setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-            setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-            renderSearches();
-            showStatus('Search moved down!');
-            syncSearchesInBackground();
-          }
-        }
-      });
+          renderSearches();
+        };
+
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Escape') { e.preventDefault(); renderSearches(); }
+        });
+        input.addEventListener('blur', commit);
+
+        goBtn.replaceWith(input);
+        input.focus();
+        input.select();
+      }
+
+      function wireDragAndDrop(row, index) {
+        row.addEventListener('dragstart', (e) => {
+          row.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', String(index));
+        });
+        row.addEventListener('dragend', () => {
+          row.classList.remove('dragging');
+          searchesList.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+        });
+        row.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          row.classList.add('drop-target');
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+        row.addEventListener('drop', (e) => {
+          e.preventDefault();
+          row.classList.remove('drop-target');
+          const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const to = index;
+          if (Number.isNaN(from) || from === to) return;
+          const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+          const [moved] = searches.splice(from, 1);
+          searches.splice(to, 0, moved);
+          focusAfterRender = to;
+          persistSearches(searches, 'Search reordered');
+        });
+      }
 
       addSearchBtn.addEventListener('click', async () => {
         const term = newSearchTerm.value.trim();
-
         if (!term) {
           showStatus('Please enter a search term', true);
           return;
         }
-
         const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-        searches.push({ name: term, term: term });
-        setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
-        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, Date.now());
-
+        searches.push({ name: term, term });
         newSearchTerm.value = '';
-        renderSearches();
-        showStatus('Search added!');
-        // Sync in background
-        syncSearchesInBackground();
+        persistSearches(searches, 'Search added');
       });
 
       // Allow Enter key to add search
@@ -2716,17 +2243,51 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
       renderSearches();
 
+      let clearArmed = false;
+      let clearDisarm = null;
+      const clearOriginalText = clearCacheBtn.textContent;
       clearCacheBtn.addEventListener('click', () => {
-        if (confirm('Are you sure you want to clear all cached prices?')) {
-          setStorage(CONFIG.CACHE_KEY, {});
-          showStatus('Cache cleared!');
+        if (!clearArmed) {
+          clearArmed = true;
+          clearCacheBtn.textContent = '⚠️ Confirm: clear all cached prices?';
+          clearCacheBtn.classList.add('armed');
+          if (clearDisarm) clearTimeout(clearDisarm);
+          clearDisarm = setTimeout(() => {
+            clearArmed = false;
+            clearCacheBtn.textContent = clearOriginalText;
+            clearCacheBtn.classList.remove('armed');
+          }, 3000);
+          return;
         }
+        setStorage(CONFIG.CACHE_KEY, {});
+        memoryCache = {};
+        pendingCacheUpdates.clear();
+        clearCacheBtn.textContent = clearOriginalText;
+        clearCacheBtn.classList.remove('armed');
+        clearArmed = false;
+        if (clearDisarm) { clearTimeout(clearDisarm); clearDisarm = null; }
+        showStatus('Cache cleared');
       });
 
       settingsModal.addEventListener('click', (e) => {
-        if (e.target === settingsModal) {
-          settingsModal.remove();
-          settingsModal = null;
+        if (e.target === settingsModal) closeSettingsModal();
+      });
+
+      // Focus trap inside the dialog (Tab / Shift-Tab cycles first↔last).
+      dialog.addEventListener('keydown', (e) => {
+        if (e.key !== 'Tab') return;
+        const focusables = dialog.querySelectorAll(
+          'a[href], button:not([disabled]), textarea, input:not([disabled]), select, [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
         }
       });
 
@@ -2770,63 +2331,68 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
   }
 
   addStyle(`
-    @import url('https://fonts.googleapis.com/css?family=Cookie');
-    .vine-price-badge {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      padding: 8px 12px;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-      z-index: 1000;
-      transition: transform 0.2s ease, box-shadow 0.2s ease;
-      -webkit-backdrop-filter: blur(8px);
-      backdrop-filter: blur(8px);
-      animation: slideIn 0.3s ease-out;
+    :root {
+      --vine-bg: #ffffff;
+      --vine-fg: #0F1111;
+      --vine-fg-muted: #565959;
+      --vine-border: #D5D9D9;
+      --vine-border-strong: #8D9091;
+      --vine-surface: #F7F8F8;
+      --vine-primary: #FFD814;
+      --vine-primary-hover: #F7CA00;
+      --vine-primary-border: #FCD200;
+      --vine-secondary: #F0F2F2;
+      --vine-secondary-hover: #E3E6E6;
+      --vine-link: #007185;
+      --vine-link-hover: #C7511F;
+      --vine-danger: #B12704;
+      --vine-danger-bg: #FEF0EF;
+      --vine-success-fg: #1B5E20;
+      --vine-success-bg: #E8F5E9;
+      --vine-z-badge: 10;
+      --vine-z-fab: 9000;
+      --vine-z-modal: 10000;
     }
 
-    @keyframes slideIn {
-      from {
-        opacity: 0;
-        transform: translateY(-10px);
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --vine-bg: #1A1A1A;
+        --vine-fg: #E3E6E6;
+        --vine-fg-muted: #A8ADAD;
+        --vine-border: #3A3A3A;
+        --vine-border-strong: #5A5A5A;
+        --vine-surface: #242424;
+        --vine-secondary: #2E2E2E;
+        --vine-secondary-hover: #3A3A3A;
+        --vine-danger-bg: #3A1515;
+        --vine-success-bg: #1A3A1F;
+        --vine-success-fg: #A5D6A7;
       }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+    }
+
+    .vine-price-badge {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      box-shadow: 0 1px 2px rgba(15, 17, 17, 0.15);
+      z-index: var(--vine-z-badge);
     }
 
     .vine-price-badge:hover {
-      transform: scale(1.05);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 2px 6px rgba(15, 17, 17, 0.2);
     }
 
-    .vine-price-green {
-      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-      color: white;
-    }
-
-    .vine-price-yellow {
-      background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
-      color: #1f2937;
-    }
-
-    .vine-price-red {
-      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-      color: white;
-    }
-
-    .vine-price-purple {
-      background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);
-      color: white;
-      box-shadow: 0 0 10px rgba(168, 85, 247, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.2);
-    }
+    .vine-price-green  { background: #046044; color: #fff; }
+    .vine-price-yellow { background: #FFD814; color: #0F1111; }
+    .vine-price-red    { background: #B12704; color: #fff; }
+    .vine-price-purple { background: #6B21A8; color: #fff; }
 
     .vine-price-text {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -2895,7 +2461,7 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       }
     }
     
-    /* Floating Action Button (FAB) for mobile */
+    /* Floating Action Button (FAB) — shown only when there's no header link. */
     .vine-fab {
       position: fixed;
       bottom: 20px;
@@ -2903,44 +2469,316 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       width: 56px;
       height: 56px;
       border-radius: 50%;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border: none;
+      background: var(--vine-primary);
+      color: var(--vine-fg);
+      border: 1px solid var(--vine-primary-border);
       font-size: 24px;
       cursor: pointer;
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-      z-index: 9999;
+      box-shadow: 0 4px 12px rgba(15, 17, 17, 0.2);
+      z-index: var(--vine-z-fab);
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
-    
-    .vine-fab:hover {
-      transform: scale(1.1);
-      box-shadow: 0 6px 16px rgba(102, 126, 234, 0.6);
+    .vine-fab:hover { background: var(--vine-primary-hover); }
+    .vine-fab:active { transform: scale(0.97); }
+    body.vine-has-header-link .vine-fab { display: none; }
+
+    /* Shared button styles inside the settings modal and review generator. */
+    .vine-btn-primary {
+      background: var(--vine-primary);
+      color: var(--vine-fg);
+      border: 1px solid var(--vine-primary-border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      min-height: 36px;
     }
-    
-    .vine-fab:active {
-      transform: scale(0.95);
+    .vine-btn-primary:hover:not([disabled]) { background: var(--vine-primary-hover); }
+    .vine-btn-primary[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+    .vine-btn-secondary {
+      background: var(--vine-secondary);
+      color: var(--vine-fg);
+      border: 1px solid var(--vine-border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 14px;
+      cursor: pointer;
+      min-height: 36px;
     }
-    
-    /* Hide FAB on desktop if header link exists */
-    @media screen and (min-width: 769px) {
-      #vvp-price-settings-link ~ body .vine-fab {
-        display: none;
+    .vine-btn-secondary:hover:not([disabled]) { background: var(--vine-secondary-hover); }
+    .vine-btn-secondary[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+    /* Saved-search rows (DOM-rendered). */
+    .vine-search-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      background: var(--vine-surface);
+      border: 1px solid var(--vine-border);
+      border-radius: 6px;
+    }
+    .vine-search-row.dragging { opacity: 0.4; }
+    .vine-search-row.drop-target { border-color: var(--vine-link); background: #E6F3F5; }
+    .vine-search-grip {
+      cursor: grab;
+      color: var(--vine-fg-muted);
+      padding: 0 4px;
+      font-size: 14px;
+      letter-spacing: -2px;
+      user-select: none;
+    }
+    .vine-search-row.dragging .vine-search-grip { cursor: grabbing; }
+    .vine-search-go {
+      flex: 1;
+      text-align: left;
+      padding: 8px 12px;
+      background: var(--vine-secondary);
+      color: var(--vine-fg);
+      border: 1px solid var(--vine-border);
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      min-height: 36px;
+    }
+    .vine-search-go:hover { background: var(--vine-secondary-hover); }
+    .vine-search-edit, .vine-search-delete {
+      padding: 6px 10px;
+      background: var(--vine-bg);
+      color: var(--vine-fg);
+      border: 1px solid var(--vine-border);
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      min-height: 36px;
+      min-width: 40px;
+    }
+    .vine-search-edit:hover, .vine-search-delete:hover { background: var(--vine-secondary); }
+    .vine-search-delete.armed {
+      background: var(--vine-danger-bg);
+      border-color: var(--vine-danger);
+      color: var(--vine-danger);
+      font-weight: 600;
+    }
+    .vine-search-rename {
+      flex: 1;
+      padding: 8px 10px;
+      border: 2px solid var(--vine-link);
+      border-radius: 6px;
+      font-size: 14px;
+      background: var(--vine-bg);
+      color: var(--vine-fg);
+      outline: none;
+    }
+    .vine-search-empty {
+      padding: 20px;
+      text-align: center;
+      color: var(--vine-fg-muted);
+      background: var(--vine-surface);
+      border: 1px dashed var(--vine-border);
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    /* Settings modal chrome. */
+    .vine-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--vine-border);
+    }
+    .vine-modal-title {
+      margin: 0;
+      font-size: clamp(18px, 4vw, 22px);
+      font-weight: 600;
+      color: var(--vine-fg);
+    }
+    .vine-modal-version {
+      margin-left: 6px;
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--vine-fg-muted);
+    }
+    .vine-modal-close-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid var(--vine-border);
+      background: var(--vine-bg);
+      color: var(--vine-fg);
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .vine-modal-close-btn:hover { background: var(--vine-secondary); }
+
+    .vine-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--vine-border);
+    }
+    .vine-tab {
+      flex: 1;
+      padding: 10px 8px;
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vine-fg-muted);
+      cursor: pointer;
+      min-height: 44px;
+    }
+    .vine-tab:hover { color: var(--vine-fg); }
+    .vine-tab.vine-tab-active {
+      color: var(--vine-fg);
+      border-bottom-color: var(--vine-primary);
+    }
+
+    .vine-btn-danger {
+      background: var(--vine-bg);
+      color: var(--vine-danger);
+      border: 1px solid var(--vine-border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 14px;
+      cursor: pointer;
+      min-height: 36px;
+    }
+    .vine-btn-danger:hover { background: var(--vine-danger-bg); border-color: var(--vine-danger); }
+    .vine-btn-danger.armed {
+      background: var(--vine-danger-bg);
+      border-color: var(--vine-danger);
+      font-weight: 600;
+    }
+
+    /* AI Review Generator panel — matches Amazon's card aesthetic. */
+    .vine-review-panel {
+      margin: 20px 0;
+      padding: 16px;
+      background: var(--vine-bg);
+      border: 1px solid var(--vine-border);
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(15, 17, 17, 0.06);
+    }
+    .vine-review-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .vine-review-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--vine-fg);
+    }
+    .vine-review-close {
+      width: 32px;
+      height: 32px;
+      min-width: 32px;
+      border-radius: 50%;
+      border: 1px solid var(--vine-border);
+      background: var(--vine-bg);
+      color: var(--vine-fg);
+      font-size: 16px;
+      cursor: pointer;
+    }
+    .vine-review-close:hover { background: var(--vine-secondary); }
+    .vine-review-label {
+      display: block;
+      margin: 10px 0 4px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vine-fg);
+    }
+    .vine-review-hint {
+      font-weight: 400;
+      color: var(--vine-fg-muted);
+    }
+    .vine-review-input {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--vine-border);
+      border-radius: 6px;
+      font-size: 14px;
+      background: var(--vine-bg);
+      color: var(--vine-fg);
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+    .vine-review-input:focus {
+      border-color: var(--vine-link);
+      outline: 2px solid rgba(0, 113, 133, 0.2);
+      outline-offset: -1px;
+    }
+    .vine-review-textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+    .vine-review-generate {
+      width: 100%;
+      margin-top: 12px;
+    }
+    .vine-review-output { margin-top: 12px; }
+    .vine-review-result {
+      padding: 10px 12px;
+      background: var(--vine-surface);
+      border: 1px solid var(--vine-border);
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 6px;
+    }
+    .vine-review-result-body { white-space: pre-wrap; }
+    .vine-review-copy { width: 100%; margin-bottom: 10px; }
+    .vine-review-copy.vine-copied {
+      background: var(--vine-success-bg);
+      border-color: var(--vine-success-fg);
+      color: var(--vine-success-fg);
+    }
+    .vine-status-banner {
+      display: none;
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+
+    /* Improve filter bar tap targets on mobile. */
+    @media screen and (max-width: 768px) {
+      #vine-color-filter label {
+        min-height: 44px;
+        padding: 0 6px;
+      }
+      #vine-color-filter input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
       }
     }
   `);
 
-  // Keyboard navigation
+  const FILTER_HOTKEYS = {
+    '1': 'vine-filter-hide-cached',
+    '3': 'vine-filter-purple',
+    '4': 'vine-filter-green',
+    '5': 'vine-filter-yellow',
+    '6': 'vine-filter-red'
+  };
+
   function setupKeyboardNavigation() {
     console.log('[Vine] Setting up keyboard navigation...');
 
     let lastVPress = 0;
 
     const keyHandler = (e) => {
-      // Don't trigger if user is typing in an input field (except for specific shortcuts)
       const activeElement = document.activeElement;
       const isTyping = activeElement && (
         activeElement.tagName === 'INPUT' ||
@@ -2948,124 +2786,56 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
         activeElement.isContentEditable
       );
 
-      // Double-tap V: Open/Close Vine Tools (only when NOT typing)
-      // Press V twice within 500ms to open Vine Tools
-      if (!isTyping && e.key === 'v' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-        const now = Date.now();
-        const timeSinceLastV = now - lastVPress;
-
-        if (timeSinceLastV < 500) {
-          // Double-tap detected!
-          console.log('[Vine] Double-tap V detected, opening Vine Tools...');
-          e.preventDefault();
-          e.stopPropagation();
-          openSettingsModal();
-          lastVPress = 0; // Reset
-          return false;
-        } else {
-          // First tap
-          lastVPress = now;
-        }
-      }
-
-
-      // Escape: Close open modals
+      // Escape always closes modals/panels — even while typing inside them.
       if (e.key === 'Escape') {
         if (settingsModal) {
           e.preventDefault();
-          settingsModal.remove();
-          settingsModal = null;
+          closeSettingsModal();
+          return;
+        }
+        const reviewPanel = document.getElementById('vine-review-generator');
+        if (reviewPanel && reviewPanel.style.display !== 'none') {
+          e.preventDefault();
+          reviewPanel.style.display = 'none';
           return;
         }
       }
 
-      // Don't process other shortcuts if typing
-      if (isTyping) {
-        return;
-      }
-
-      // Number keys: Toggle filters (only when NOT typing)
-      // 1: Toggle Hide Cached
-      if (e.key === '1') {
-        const checkbox = document.getElementById('vine-filter-hide-cached');
-        if (checkbox) {
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event('change'));
-          console.log('[Vine] Toggled Hide Cached:', checkbox.checked);
-        }
-        return;
-      }
-
-
-
-      // 3: Toggle Purple filter
-      if (e.key === '3') {
-        const checkbox = document.getElementById('vine-filter-purple');
-        if (checkbox) {
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event('change'));
-          console.log('[Vine] Toggled Purple filter:', checkbox.checked);
-        }
-        return;
-      }
-
-      // 4: Toggle Green filter
-      if (e.key === '4') {
-        const checkbox = document.getElementById('vine-filter-green');
-        if (checkbox) {
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event('change'));
-          console.log('[Vine] Toggled Green filter:', checkbox.checked);
-        }
-        return;
-      }
-
-      // 5: Toggle Yellow filter
-      if (e.key === '5') {
-        const checkbox = document.getElementById('vine-filter-yellow');
-        if (checkbox) {
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event('change'));
-          console.log('[Vine] Toggled Yellow filter:', checkbox.checked);
-        }
-        return;
-      }
-
-      // 6: Toggle Red filter
-      if (e.key === '6') {
-        const checkbox = document.getElementById('vine-filter-red');
-        if (checkbox) {
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event('change'));
-          console.log('[Vine] Toggled Red filter:', checkbox.checked);
-        }
-        return;
-      }
-
-      // Right Arrow = Next Page
-      if (e.key === 'ArrowRight') {
-        const nextButton = document.querySelector('li.a-last a') ||
-          document.querySelector('.a-pagination .a-last a') ||
-          document.querySelector('a[aria-label="Next page"]') ||
-          document.querySelector('.a-pagination li:last-child:not(.a-disabled) a');
-
-        if (nextButton && !nextButton.parentElement.classList.contains('a-disabled')) {
+      // Double-tap V: Open Vine Tools (only when NOT typing)
+      if (!isTyping && e.key === 'v' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+        const now = Date.now();
+        if (now - lastVPress < 500) {
           e.preventDefault();
-          nextButton.click();
+          e.stopPropagation();
+          openSettingsModal();
+          lastVPress = 0;
+          return false;
         }
+        lastVPress = now;
+      } else if (e.key !== 'Escape') {
+        // Any key that isn't another 'v' resets the double-tap window.
+        lastVPress = 0;
       }
 
-      // Left Arrow = Previous Page
-      if (e.key === 'ArrowLeft') {
-        const prevButton = document.querySelector('li.a-first a') ||
-          document.querySelector('.a-pagination .a-first a') ||
-          document.querySelector('a[aria-label="Previous page"]') ||
-          document.querySelector('.a-pagination li:first-child:not(.a-disabled) a');
+      if (isTyping) return;
 
-        // Make sure we're not on the first page
-        if (prevButton && !prevButton.parentElement.classList.contains('a-disabled')) {
+      const filterId = FILTER_HOTKEYS[e.key];
+      if (filterId) {
+        const checkbox = document.getElementById(filterId);
+        if (checkbox) {
           e.preventDefault();
-          prevButton.click();
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        const selectors = e.key === 'ArrowRight' ? CONFIG.NEXT_PAGE_SELECTORS : CONFIG.PREV_PAGE_SELECTORS;
+        const btn = findPageLink(selectors);
+        if (btn && !btn.parentElement.classList.contains('a-disabled')) {
+          e.preventDefault();
+          btn.click();
         }
       }
     };
@@ -3088,33 +2858,19 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
       getColorFilter(() => { });
       processVineItems(true);
 
-      setTimeout(() => {
-        getCache((cache) => {
-          const cleaned = cleanupExpiredCache(cache);
-          if (Object.keys(cleaned).length !== Object.keys(cache).length) {
-            setCache(cleaned);
-          }
-        });
-
-        // Auto-sync if token exists
-        const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
-        if (githubToken) {
-          // Add a small delay so we don't slow down initial page processing
-          setTimeout(() => {
-            console.log('Vine Price Display: Starting auto-sync...');
-
-            // Sync cache
-            syncWithGitHub(githubToken)
-              .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} cached items)`))
-              .catch(err => console.error('Vine Price Display: Cache auto-sync failed', err));
-
-            // Sync searches
-            syncSearchesWithGitHub(githubToken)
-              .then(result => console.log(`Vine Price Display: Searches auto-sync complete (${result.count} searches)`))
-              .catch(err => console.error('Vine Price Display: Searches auto-sync failed', err));
-          }, 2000);
-        }
-      }, 0);
+      // Auto-sync if a GitHub token is configured. Cache-expiry cleanup is deferred in getCache.
+      const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+      if (githubToken) {
+        setTimeout(() => {
+          console.log('Vine Price Display: Starting auto-sync...');
+          syncWithGitHub(githubToken)
+            .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} cached items)`))
+            .catch(err => console.error('Vine Price Display: Cache auto-sync failed', err));
+          syncSearchesWithGitHub(githubToken)
+            .then(result => console.log(`Vine Price Display: Searches auto-sync complete (${result.count} searches)`))
+            .catch(err => console.error('Vine Price Display: Searches auto-sync failed', err));
+        }, 2000);
+      }
 
       observePageChanges();
       createSettingsUI();
@@ -3139,11 +2895,8 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
   }
 
   window.addEventListener('beforeunload', () => {
-    if (mutationObserver) {
-      mutationObserver.disconnect();
-    }
-    if (processingTimeout) {
-      clearTimeout(processingTimeout);
-    }
+    if (pendingCacheUpdates.size > 0) flushCacheUpdates();
+    if (mutationObserver) mutationObserver.disconnect();
+    if (processingTimeout) clearTimeout(processingTimeout);
   });
 })();

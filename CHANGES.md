@@ -1,5 +1,21 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.0 - Code & UI Cleanup Pass
+
+- **Feature**: Saved searches now support **drag-and-drop reordering** — grab the ⋮⋮ handle on any row and drop it where you want. Up/down arrow buttons removed.
+- **UX**: Rename is now **inline** (click ✏️, type, Enter) instead of a native `prompt()`; delete is a **two-step armed-click** instead of a native `confirm()`; same pattern for "Clear Cache".
+- **UI**: Settings modal, AI Review Generator, and saved-search rows all redesigned to match Amazon's native palette (white cards, `#D5D9D9` borders, `#FFD814` primary buttons, `#007185` links). Purple gradients and the Google Fonts `Cookie` import removed.
+- **Accessibility**: Modal is now a proper `role="dialog"` with focus trap, focus restoration on close, and body scroll lock while open. Every icon-only button gets an `aria-label`. Status banners use `role="status" aria-live="polite"`. Darker green price badge for WCAG AA contrast. Tap-targets bumped to 44×44 on mobile.
+- **UX**: `Esc` now closes the AI Review Generator and works even when focus is inside an input. An explicit ✕ close button was added to the settings modal. Dark-mode support via `prefers-color-scheme`.
+- **Fix**: `syncWithGitHub` now flushes pending cache writes *before* merging with remote — prevents dropped prices during the 2s auto-sync window. PATCH is also skipped when the merged cache byte-matches the remote file.
+- **Performance**: `applyColorFilter` no longer writes the cache on every re-apply — the "mark seen for next session" write happens once per item, guarded by `vineSeenPersisted`. Pre-release detection (`isPreReleaseItem`) is memoized on `dataset.vinePreRelease`. Cache expiry cleanup is deferred to `requestIdleCallback` so it doesn't block the first `processBatch`.
+- **Refactor**: Extracted shared `gmFetch`, `githubRequest`, `makeShowStatus`, `findFirstMatch`, and pagination helpers. Collapsed triplicated retry logic in `fetchPrice`. Merged duplicate `beforeunload` listeners.
+- **Cleanup**: Deleted dead `processVineItem` (~90 lines), unused `itemsProcessedThisSession`, unused `SHIPPING_ADDRESS_KEY` / `ENABLE_QUICK_BUY_KEY`, and the duplicate threshold-migration block in `getPriceColorSync`.
+- **Fix**: Saved-search rows now built via DOM nodes (not `innerHTML` template interpolation) — closes a class of XSS vectors around renamed search names.
+- **Fix**: Mobile FAB visibility now driven by a `body.vine-has-header-link` class instead of a broken sibling selector that never matched.
+- **Fix**: The double-tap `V V` hotkey now resets properly if any other key is pressed between presses.
+- **Fix**: UI injection retries (color filter bar, AI Review panel) are now capped at 10 attempts to prevent runaway polling on unsupported pages.
+
 ## Version 1.40.6 - AI Title Strict Constraints
 
 - **Enhancement**: Fixed the AI Review title prompt and made it extremely explicit that the title MUST be a single, short phrase under 10 words, preventing long rambling multi-sentence titles.
