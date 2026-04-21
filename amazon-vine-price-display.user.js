@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.1
+// @version      1.41.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -982,6 +982,120 @@
     });
   }
 
+  // ---- Review-form auto-fill (title + body) ----
+  // Amazon's review form comes in two flavors: (1) legacy React <input>/<textarea> pair, or
+  // (2) a contenteditable rich-text editor (body is a div[contenteditable], not a textarea).
+  // We try both. Title is virtually always a plain <input>. Body is the moving target.
+
+  const REVIEW_TITLE_SELECTORS = [
+    'input#ryp__review-title__input',
+    'input[name="reviewTitle"]',
+    'input[id*="review-title"]',
+    'input[aria-label*="review" i][aria-label*="title" i]',
+    'input[placeholder*="title" i]'
+  ];
+
+  const REVIEW_BODY_TEXTAREA_SELECTORS = [
+    'textarea#ryp__review-text__textarea',
+    'textarea.ryp__review-text__textarea',
+    'textarea[id*="review-text"]',
+    'textarea[id*="review-body"]',
+    'textarea[name="review"]',
+    'textarea[aria-label*="review" i][aria-label*="body" i]',
+    '[data-hook="review-body"]'
+  ];
+
+  const REVIEW_BODY_CONTENTEDITABLE_SELECTORS = [
+    'div[contenteditable="true"][aria-label*="review" i]',
+    'div[contenteditable="true"][data-hook*="review"]',
+    'div[role="textbox"][contenteditable="true"]',
+    '[contenteditable="true"].ProseMirror',
+    '[contenteditable="true"][data-lexical-editor="true"]'
+  ];
+
+  function findReviewTitleField() {
+    return findFirstMatch(document, REVIEW_TITLE_SELECTORS);
+  }
+
+  function findReviewBodyField() {
+    const textarea = findFirstMatch(document, REVIEW_BODY_TEXTAREA_SELECTORS);
+    if (textarea && textarea.id !== 'vine-review-comments') return textarea;
+
+    const editable = findFirstMatch(document, REVIEW_BODY_CONTENTEDITABLE_SELECTORS);
+    if (editable) return editable;
+
+    // Last-resort textarea fallback (skip our own, skip hidden ones).
+    for (const ta of document.querySelectorAll('textarea')) {
+      if (ta.id === 'vine-review-comments') continue;
+      if (ta.offsetParent === null) continue; // hidden
+      return ta;
+    }
+    return null;
+  }
+
+  function fillReviewField(el, value) {
+    if (!el) return false;
+    const tag = el.tagName.toLowerCase();
+
+    if (tag === 'input' || tag === 'textarea') {
+      const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (nativeSetter && nativeSetter.set) {
+        nativeSetter.set.call(el, value);
+      } else {
+        el.value = value;
+      }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    if (el.isContentEditable) {
+      el.focus();
+      // Select everything currently in the editor, then let execCommand do the insert —
+      // this works across Draft/Lexical/ProseMirror-style editors because they all
+      // listen for beforeinput/input events produced by execCommand.
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      let inserted = false;
+      try {
+        inserted = document.execCommand('insertText', false, value);
+      } catch (e) {
+        inserted = false;
+      }
+
+      if (!inserted) {
+        // Fallback: direct DOM write + bubbling input event. Most rich editors will
+        // re-render from their internal state, but this at least gets the text visible.
+        el.textContent = value;
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: value }));
+      } else {
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return true;
+    }
+
+    console.warn('[Vine Tools] Unknown review field type:', el);
+    return false;
+  }
+
+  function autoFillReviewForm(title, body) {
+    const titleEl = findReviewTitleField();
+    const bodyEl = findReviewBodyField();
+    console.log('[Vine Tools] Review fields found:', {
+      title: titleEl ? `${titleEl.tagName}#${titleEl.id || '(no-id)'}` : 'NONE',
+      body: bodyEl ? `${bodyEl.tagName}#${bodyEl.id || '(no-id)'}${bodyEl.isContentEditable ? '[contenteditable]' : ''}` : 'NONE'
+    });
+    return {
+      title: !!(titleEl && fillReviewField(titleEl, title)),
+      body: !!(bodyEl && fillReviewField(bodyEl, body))
+    };
+  }
+
   // AI Review Generator
   async function generateReview(productDescription, starRating, userComments) {
     const apiKey = getStorage(CONFIG.OPENAI_API_KEY, '');
@@ -1254,61 +1368,20 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
         if (window.location.href.includes('/review/create-review')) {
           try {
-            // Most common Amazon review form selectors
-            const titleInput = document.querySelector('input[name="reviewTitle"], input[id*="review-title"], input[id="ryp__review-title__input"]');
-
-            // Amazon has several variations for the Write a Review box
-            let bodyInput = document.querySelector('#ryp__review-text__textarea, textarea[id*="review-text"], textarea[id*="review-body"], [data-hook="review-body"], textarea[name="review"], textarea.ryp__review-text__textarea');
-            if (!bodyInput) {
-              const allTextareas = document.querySelectorAll('textarea');
-              for (const ta of allTextareas) {
-                if (ta.id !== 'vine-review-comments') {
-                  bodyInput = ta;
-                  break;
-                }
-              }
-            }
-
-            let autoFilled = false;
-
-            // React compatible value setter
-            const fillReactInput = (element, value) => {
-              if (!element) return false;
-
-              const isTextArea = element.tagName.toLowerCase() === 'textarea';
-              const nativeValueSetter = Object.getOwnPropertyDescriptor(
-                window[isTextArea ? 'HTMLTextAreaElement' : 'HTMLInputElement'].prototype,
-                "value"
-              );
-
-              if (nativeValueSetter && nativeValueSetter.set) {
-                nativeValueSetter.set.call(element, value);
-              } else {
-                element.value = value;
-              }
-
-              element.dispatchEvent(new Event('input', { bubbles: true }));
-              element.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
-            };
-
-            if (titleInput && fillReactInput(titleInput, title)) {
-              autoFilled = true;
-            }
-
-            // If bodyInput is found (and it's not the comment box of our own UI)
-            if (bodyInput && bodyInput.id !== 'vine-review-comments' && fillReactInput(bodyInput, body)) {
-              autoFilled = true;
-            }
-
-            if (autoFilled) {
-              showStatus('Review generated and inserted automatically!');
+            const filled = autoFillReviewForm(title, body);
+            console.log('[Vine Tools] Auto-fill result:', filled);
+            if (filled.title && filled.body) {
+              showStatus('Review inserted into the form');
+            } else if (filled.title && !filled.body) {
+              showStatus('Title filled — body field not found, please paste manually', true);
+            } else if (!filled.title && filled.body) {
+              showStatus('Body filled — title field not found, please paste manually', true);
             } else {
-              showStatus('Review generated successfully! (Could not auto-fill fields)');
+              showStatus('Review generated — could not find form fields, please paste manually', true);
             }
           } catch (e) {
             console.error('Vine Tools auto-fill error:', e);
-            showStatus('Review generated successfully!');
+            showStatus('Review generated — auto-fill threw, please paste manually', true);
           }
         } else {
           showStatus('Review generated successfully!');

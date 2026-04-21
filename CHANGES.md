@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.2 - Review Body Auto-Fill for Rich-Text Editor
+
+- **Fix**: Review-form auto-fill now handles Amazon's rich-text editor (contenteditable `<div>`) in addition to the legacy `<textarea>`. Title was working but body would silently fail to populate when the form rendered as a ProseMirror/Lexical-style editor.
+- **Implementation**: `fillReviewField` now branches on element type — `<input>`/`<textarea>` still use the React native-setter + `input` event path; contenteditable editors use `execCommand('insertText')` after selecting existing contents (which triggers the beforeinput/input events Draft/Lexical/ProseMirror listen for), with a `textContent` + `InputEvent` fallback.
+- **Diagnostics**: The console now logs what field types were matched (e.g. `{title: 'INPUT#ryp__review-title__input', body: 'DIV#(no-id)[contenteditable]'}`) so if a new Amazon variant ships, we can see which selector to add. Status messages are now specific about which half of the fill succeeded.
+
 ## Version 1.41.1 - Dark Mode Revert & UI Polish
 
 - **Fix**: Reverted the `@media (prefers-color-scheme: dark)` block from v1.41.0. On macOS dark mode, the modal interior remained hardcoded white but buttons pulled dark-mode text colors, making "Save Settings" (white-on-yellow) and "Clear Cache" (red-on-black) illegible. Userscript is now explicitly light-only to match its host (Amazon is light-only too).
