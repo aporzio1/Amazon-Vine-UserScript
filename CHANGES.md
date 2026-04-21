@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.3 - Rufus Textarea Exclusion + Scoped Review Form Lookup
+
+- **Fix**: The review-body auto-fill was silently populating Amazon's Rufus AI shopping-chat textarea (`<textarea id="rufus-text-area">`) instead of the real review body. My last-resort "first non-vine textarea" fallback matched it because Rufus's widget ships on the same page.
+- **Fix**: Auto-fill now prefers **scoped** lookup inside `form[name="ryp__review-form"]` (or equivalent) before falling back to page-wide selectors — this guarantees we can't accidentally target a different feature's text input.
+- **Fix**: Explicit deny-list for field IDs matching `/rufus/i` or `/search/i`, plus `rufus-text-area` and our own `vine-review-comments`. Any future Amazon-injected textarea that shares one of these naming conventions will be skipped.
+
 ## Version 1.41.2 - Review Body Auto-Fill for Rich-Text Editor
 
 - **Fix**: Review-form auto-fill now handles Amazon's rich-text editor (contenteditable `<div>`) in addition to the legacy `<textarea>`. Title was working but body would silently fail to populate when the form rendered as a ProseMirror/Lexical-style editor.

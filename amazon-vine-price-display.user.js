@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.2
+// @version      1.41.3
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1008,28 +1008,68 @@
   const REVIEW_BODY_CONTENTEDITABLE_SELECTORS = [
     'div[contenteditable="true"][aria-label*="review" i]',
     'div[contenteditable="true"][data-hook*="review"]',
-    'div[role="textbox"][contenteditable="true"]',
     '[contenteditable="true"].ProseMirror',
-    '[contenteditable="true"][data-lexical-editor="true"]'
+    '[contenteditable="true"][data-lexical-editor="true"]',
+    'div[role="textbox"][contenteditable="true"]'
   ];
+
+  // Must be excluded from any fallback — these are other textareas Amazon injects on the
+  // same page (Rufus AI chat, search, etc.) that would otherwise match first.
+  const NON_REVIEW_FIELD_IDS = new Set(['vine-review-comments', 'rufus-text-area']);
+  const NON_REVIEW_ID_PATTERNS = [/rufus/i, /search/i];
+
+  function isNonReviewField(el) {
+    if (!el || !el.id) return false;
+    if (NON_REVIEW_FIELD_IDS.has(el.id)) return true;
+    return NON_REVIEW_ID_PATTERNS.some(p => p.test(el.id));
+  }
+
+  function findReviewFormScope() {
+    return document.querySelector('form[name="ryp__review-form"]') ||
+      document.querySelector('form[action*="review"]') ||
+      document.querySelector('[data-hook*="review-form"]') ||
+      null;
+  }
 
   function findReviewTitleField() {
     return findFirstMatch(document, REVIEW_TITLE_SELECTORS);
   }
 
   function findReviewBodyField() {
-    const textarea = findFirstMatch(document, REVIEW_BODY_TEXTAREA_SELECTORS);
-    if (textarea && textarea.id !== 'vine-review-comments') return textarea;
+    const scope = findReviewFormScope();
 
-    const editable = findFirstMatch(document, REVIEW_BODY_CONTENTEDITABLE_SELECTORS);
-    if (editable) return editable;
-
-    // Last-resort textarea fallback (skip our own, skip hidden ones).
-    for (const ta of document.querySelectorAll('textarea')) {
-      if (ta.id === 'vine-review-comments') continue;
-      if (ta.offsetParent === null) continue; // hidden
-      return ta;
+    // 1. Scoped search within the review form (most reliable — can't match Rufus).
+    if (scope) {
+      for (const s of REVIEW_BODY_TEXTAREA_SELECTORS) {
+        const el = scope.querySelector(s);
+        if (el && !isNonReviewField(el)) return el;
+      }
+      for (const s of REVIEW_BODY_CONTENTEDITABLE_SELECTORS) {
+        const el = scope.querySelector(s);
+        if (el) return el;
+      }
+      // Any contenteditable inside the form, visible, not excluded.
+      for (const el of scope.querySelectorAll('[contenteditable="true"]')) {
+        if (el.offsetParent !== null) return el;
+      }
+      // Any non-excluded textarea inside the form.
+      for (const ta of scope.querySelectorAll('textarea')) {
+        if (isNonReviewField(ta)) continue;
+        if (ta.offsetParent === null) continue;
+        return ta;
+      }
     }
+
+    // 2. Unscoped selector fallback (older pages without an identifiable form wrapper).
+    for (const s of REVIEW_BODY_TEXTAREA_SELECTORS) {
+      const el = document.querySelector(s);
+      if (el && !isNonReviewField(el)) return el;
+    }
+    for (const s of REVIEW_BODY_CONTENTEDITABLE_SELECTORS) {
+      const el = document.querySelector(s);
+      if (el) return el;
+    }
+
     return null;
   }
 
