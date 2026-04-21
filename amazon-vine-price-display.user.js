@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.3
+// @version      1.41.4
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -998,11 +998,19 @@
   const REVIEW_BODY_TEXTAREA_SELECTORS = [
     'textarea#ryp__review-text__textarea',
     'textarea.ryp__review-text__textarea',
+    'textarea#reviewText',
     'textarea[id*="review-text"]',
+    'textarea[id*="reviewText"]',
     'textarea[id*="review-body"]',
+    'textarea[id*="reviewBody"]',
+    'textarea[name="reviewText"]',
     'textarea[name="review"]',
-    'textarea[aria-label*="review" i][aria-label*="body" i]',
-    '[data-hook="review-body"]'
+    'textarea[aria-label*="review" i]',
+    'textarea[placeholder*="review" i]',
+    'textarea[placeholder*="like or dislike" i]',
+    '[data-hook="review-body"]',
+    '[data-testid*="review-text" i]',
+    '[data-testid*="review-body" i]'
   ];
 
   const REVIEW_BODY_CONTENTEDITABLE_SELECTORS = [
@@ -1011,6 +1019,16 @@
     '[contenteditable="true"].ProseMirror',
     '[contenteditable="true"][data-lexical-editor="true"]',
     'div[role="textbox"][contenteditable="true"]'
+  ];
+
+  // React-mounted container for the entire review form (Scarface app).
+  const REVIEW_APP_SCOPE_SELECTORS = [
+    '#react-app.ryp__desktop',
+    '#react-app',
+    'form[name="ryp__review-form"]',
+    'form[action*="review"]',
+    '[data-hook*="review-form"]',
+    '[class*="ryp__"]'
   ];
 
   // Must be excluded from any fallback — these are other textareas Amazon injects on the
@@ -1025,20 +1043,41 @@
   }
 
   function findReviewFormScope() {
-    return document.querySelector('form[name="ryp__review-form"]') ||
-      document.querySelector('form[action*="review"]') ||
-      document.querySelector('[data-hook*="review-form"]') ||
-      null;
+    return findFirstMatch(document, REVIEW_APP_SCOPE_SELECTORS);
   }
 
   function findReviewTitleField() {
     return findFirstMatch(document, REVIEW_TITLE_SELECTORS);
   }
 
+  function describeEl(el) {
+    if (!el) return 'null';
+    const id = el.id ? `#${el.id}` : '';
+    const cls = el.className && typeof el.className === 'string'
+      ? `.${el.className.trim().split(/\s+/).slice(0, 2).join('.')}`
+      : '';
+    const aria = el.getAttribute && el.getAttribute('aria-label');
+    const ariaStr = aria ? ` aria-label="${aria.slice(0, 40)}"` : '';
+    const editable = el.isContentEditable ? '[contenteditable]' : '';
+    return `${el.tagName}${id}${cls}${ariaStr}${editable}`;
+  }
+
+  function dumpReviewFormCandidates() {
+    const scope = findReviewFormScope();
+    console.log('[Vine Tools] Review form scope:', scope ? describeEl(scope) : 'NO SCOPE FOUND');
+    const searchRoot = scope || document;
+    const textareas = Array.from(searchRoot.querySelectorAll('textarea'))
+      .filter(el => el.id !== 'vine-review-comments' && el.offsetParent !== null);
+    const editables = Array.from(searchRoot.querySelectorAll('[contenteditable="true"]'))
+      .filter(el => el.offsetParent !== null);
+    console.log('[Vine Tools] Visible textareas in scope:', textareas.map(describeEl));
+    console.log('[Vine Tools] Visible contenteditables in scope:', editables.map(describeEl));
+  }
+
   function findReviewBodyField() {
     const scope = findReviewFormScope();
 
-    // 1. Scoped search within the review form (most reliable — can't match Rufus).
+    // 1. Scoped search within the React app (most reliable — can't match Rufus).
     if (scope) {
       for (const s of REVIEW_BODY_TEXTAREA_SELECTORS) {
         const el = scope.querySelector(s);
@@ -1048,11 +1087,11 @@
         const el = scope.querySelector(s);
         if (el) return el;
       }
-      // Any contenteditable inside the form, visible, not excluded.
+      // Any contenteditable inside the scope, visible.
       for (const el of scope.querySelectorAll('[contenteditable="true"]')) {
         if (el.offsetParent !== null) return el;
       }
-      // Any non-excluded textarea inside the form.
+      // Any non-excluded, visible textarea inside the scope.
       for (const ta of scope.querySelectorAll('textarea')) {
         if (isNonReviewField(ta)) continue;
         if (ta.offsetParent === null) continue;
@@ -1060,7 +1099,7 @@
       }
     }
 
-    // 2. Unscoped selector fallback (older pages without an identifiable form wrapper).
+    // 2. Unscoped selector fallback (older layouts without the React app container).
     for (const s of REVIEW_BODY_TEXTAREA_SELECTORS) {
       const el = document.querySelector(s);
       if (el && !isNonReviewField(el)) return el;
@@ -1127,9 +1166,10 @@
     const titleEl = findReviewTitleField();
     const bodyEl = findReviewBodyField();
     console.log('[Vine Tools] Review fields found:', {
-      title: titleEl ? `${titleEl.tagName}#${titleEl.id || '(no-id)'}` : 'NONE',
-      body: bodyEl ? `${bodyEl.tagName}#${bodyEl.id || '(no-id)'}${bodyEl.isContentEditable ? '[contenteditable]' : ''}` : 'NONE'
+      title: titleEl ? describeEl(titleEl) : 'NONE',
+      body: bodyEl ? describeEl(bodyEl) : 'NONE'
     });
+    if (!bodyEl) dumpReviewFormCandidates();
     return {
       title: !!(titleEl && fillReviewField(titleEl, title)),
       body: !!(bodyEl && fillReviewField(bodyEl, body))

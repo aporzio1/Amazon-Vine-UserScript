@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.4 - Scope Review Form Lookup to React App Container
+
+- **Fix**: The v1.41.3 scoped lookup used `form[name="ryp__review-form"]`, which Amazon no longer emits. The body field is rendered by the React app inside `<div id="react-app" class="ryp__desktop">` — scope now prefers that container, with `#react-app` + the old form selectors as fallbacks.
+- **Fix**: Expanded body textarea selectors to cover the `reviewText`/`reviewBody` camelCase naming Amazon uses in its `window.P.appConfig.validationRules`, plus placeholder-text and aria-label heuristics.
+- **Diagnostics**: When the body field still can't be found, the console now dumps *every* visible textarea and contenteditable inside the review scope (with tag, id, class, aria-label) so the exact selector can be identified in one round trip.
+
 ## Version 1.41.3 - Rufus Textarea Exclusion + Scoped Review Form Lookup
 
 - **Fix**: The review-body auto-fill was silently populating Amazon's Rufus AI shopping-chat textarea (`<textarea id="rufus-text-area">`) instead of the real review body. My last-resort "first non-vine textarea" fallback matched it because Rufus's widget ships on the same page.
