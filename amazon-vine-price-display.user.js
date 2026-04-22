@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.5
+// @version      1.41.6
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -307,7 +307,10 @@
 
     if (!cacheLoaded) {
       cacheLoaded = true;
-      memoryCache = getStorage(CONFIG.CACHE_KEY, {});
+      const storedCache = getStorage(CONFIG.CACHE_KEY, {});
+      memoryCache = (storedCache && typeof storedCache === 'object' && !Array.isArray(storedCache))
+        ? storedCache
+        : {};
 
       // Defer O(n) cleanup off the first-load path so the first processBatch() isn't blocked.
       const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 500));
@@ -358,8 +361,14 @@
       return cache;
     }
     entries.sort((a, b) => {
-      const timeA = a[1].timestamp || 0;
-      const timeB = b[1].timestamp || 0;
+      const entryA = a[1];
+      const entryB = b[1];
+      const timeA = entryA && typeof entryA === 'object' && typeof entryA.timestamp === 'number'
+        ? entryA.timestamp
+        : 0;
+      const timeB = entryB && typeof entryB === 'object' && typeof entryB.timestamp === 'number'
+        ? entryB.timestamp
+        : 0;
       return timeA - timeB;
     });
     const toKeep = entries.slice(-CONFIG.MAX_CACHE_SIZE);
@@ -1564,13 +1573,23 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       return new Promise((resolve) => {
         getCache((localCache) => {
           const now = Date.now();
-          const mergedCache = { ...remoteCache };
+          const safeLocalCache = (localCache && typeof localCache === 'object' && !Array.isArray(localCache))
+            ? localCache
+            : {};
+          const mergedCache = (remoteCache && typeof remoteCache === 'object' && !Array.isArray(remoteCache))
+            ? { ...remoteCache }
+            : {};
           let remoteNeedsUpdate = false;
 
-          for (const [asin, localEntry] of Object.entries(localCache)) {
-            if (now - (localEntry.timestamp || 0) > CONFIG.CACHE_DURATION) continue;
+          for (const [asin, localEntry] of Object.entries(safeLocalCache)) {
+            if (!localEntry || typeof localEntry !== 'object') continue;
+            const localTimestamp = typeof localEntry.timestamp === 'number' ? localEntry.timestamp : 0;
+            if (now - localTimestamp > CONFIG.CACHE_DURATION) continue;
             const remoteEntry = mergedCache[asin];
-            if (!remoteEntry || (localEntry.timestamp || 0) > (remoteEntry.timestamp || 0)) {
+            const remoteTimestamp = remoteEntry && typeof remoteEntry === 'object' && typeof remoteEntry.timestamp === 'number'
+              ? remoteEntry.timestamp
+              : 0;
+            if (!remoteEntry || localTimestamp > remoteTimestamp) {
               mergedCache[asin] = localEntry;
               remoteNeedsUpdate = true;
             }

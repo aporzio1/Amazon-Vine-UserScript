@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.6 - Defensive Cache Entry Validation
+
+- **Fix**: Sync was crashing with `TypeError: null is not an object (evaluating 'localEntry.timestamp')` inside `syncWithGitHub`'s `getCache` callback when any cache entry was `null` (e.g. a partially-written entry, or stale data from an older schema). The loop dereferenced `localEntry.timestamp` without checking the entry itself.
+- **Hardening**: `syncWithGitHub` now coerces both `localCache` and `remoteCache` to plain objects (non-null, non-array) before merging, skips any individual entry that isn't a real object, and pulls `timestamp` only when it's actually a number. Same type-guards applied to `enforceCacheSizeLimit`'s sort comparator and the initial `memoryCache` hydration in `getCache` so a corrupted storage blob can't poison eviction or first-load either.
+
 ## Version 1.41.5 - JSON Response Format for AI Reviews
 
 - **Fix**: Negative reviews (2-star, especially with user comments) were producing a blob of prose that got split wrong — the entire review landed in the title field and the body was empty. The model was ignoring the "first line = title, rest = body" format rule and returning everything on a single line separated by a period.
