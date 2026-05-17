@@ -1,5 +1,12 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.41.7 - Retry & Friendlier Errors for OpenAI 429
+
+- **Fix**: "Generate Review" was bailing out with a bare `HTTP 429` on the very first rate-limit response. OpenAI's RPM/TPM limits and short bursts both surface as 429, but the script wasn't retrying, so a single overlap with another request killed the generation.
+- **Fix**: 429 responses are now retried up to 4 attempts total with exponential backoff (1s, 2s, 4s), honoring the `Retry-After` header when OpenAI sends one. 5xx responses get the same treatment. The status banner updates in real time during backoff so the user can see what's happening instead of staring at a hung button.
+- **Fix**: `insufficient_quota` (billing/plan exhausted) is no longer treated as transient — we surface it immediately as "OpenAI quota exceeded — check your plan and billing at platform.openai.com" instead of burning four retries first.
+- **Hardening**: `gmFetch` now attaches `status`, `statusText`, `responseText`, and `responseHeaders` to the rejected `Error`, so callers can read OpenAI's structured error body (`error.code`, `error.message`) instead of just a status line. Used to produce specific messages for 401 (invalid key), 429 quota vs rate-limit, and 5xx.
+
 ## Version 1.41.6 - Defensive Cache Entry Validation
 
 - **Fix**: Sync was crashing with `TypeError: null is not an object (evaluating 'localEntry.timestamp')` inside `syncWithGitHub`'s `getCache` callback when any cache entry was `null` (e.g. a partially-written entry, or stale data from an older schema). The loop dereferenced `localEntry.timestamp` without checking the entry itself.

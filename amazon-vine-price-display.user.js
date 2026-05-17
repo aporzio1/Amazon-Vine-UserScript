@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.6
+// @version      1.41.7
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -159,13 +159,33 @@
           if (response.status >= 200 && response.status < 300) {
             resolve(response);
           } else {
-            reject(new Error(`HTTP ${response.status} ${response.statusText || ''}`.trim()));
+            const err = new Error(`HTTP ${response.status} ${response.statusText || ''}`.trim());
+            err.status = response.status;
+            err.statusText = response.statusText || '';
+            err.responseText = response.responseText || '';
+            err.responseHeaders = response.responseHeaders || '';
+            reject(err);
           }
         },
         onerror: () => reject(new Error(`Network error: ${url}`))
       });
     });
   }
+
+  // Parse a `Retry-After` header value (seconds or HTTP-date) into a millisecond delay.
+  function parseRetryAfterMs(headersStr) {
+    if (!headersStr) return null;
+    const match = headersStr.match(/^retry-after:\s*(.+)$/im);
+    if (!match) return null;
+    const value = match[1].trim();
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+    const date = Date.parse(value);
+    if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+    return null;
+  }
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   function githubRequest(token, endpoint, method = 'GET', body = null) {
     return gmFetch({
@@ -1185,8 +1205,25 @@
     };
   }
 
+  // Pull a human-readable error message + structured code out of an OpenAI error response.
+  function parseOpenAIError(err) {
+    const status = err && err.status;
+    let code = null;
+    let message = '';
+    if (err && err.responseText) {
+      try {
+        const body = JSON.parse(err.responseText);
+        if (body && body.error) {
+          code = body.error.code || body.error.type || null;
+          message = body.error.message || '';
+        }
+      } catch (_) { /* non-JSON body — leave message empty */ }
+    }
+    return { status, code, message };
+  }
+
   // AI Review Generator
-  async function generateReview(productDescription, starRating, userComments) {
+  async function generateReview(productDescription, starRating, userComments, onRetry) {
     const apiKey = getStorage(CONFIG.OPENAI_API_KEY, '');
 
     if (!apiKey) {
@@ -1243,30 +1280,73 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
 Respond with a JSON object: {"title": "...", "body": "..."}`;
 
-    try {
-      const response = await gmFetch({
-        method: 'POST',
-        url: 'https://api.openai.com/v1/chat/completions',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        data: JSON.stringify({
-          model: 'gpt-3.5-turbo',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.7,
-          max_tokens: 700,
-          response_format: { type: 'json_object' }
-        })
-      });
-      const data = JSON.parse(response.responseText);
-      return data.choices[0].message.content.trim();
-    } catch (error) {
-      console.error('Error generating review:', error);
-      throw error;
+    const requestOpts = {
+      method: 'POST',
+      url: 'https://api.openai.com/v1/chat/completions',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      data: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 700,
+        response_format: { type: 'json_object' }
+      })
+    };
+
+    // Retry transient 429 (rate_limit_exceeded) and 5xx with exponential backoff, honoring
+    // OpenAI's Retry-After header when present. Don't retry insufficient_quota — that's a
+    // billing issue and no amount of waiting fixes it.
+    const MAX_ATTEMPTS = 4;
+    const BASE_DELAY_MS = 1000;
+    let attempt = 0;
+    while (true) {
+      try {
+        const response = await gmFetch(requestOpts);
+        const data = JSON.parse(response.responseText);
+        return data.choices[0].message.content.trim();
+      } catch (error) {
+        const info = parseOpenAIError(error);
+        const isRateLimit = info.status === 429 && info.code !== 'insufficient_quota';
+        const isServerErr = info.status >= 500 && info.status < 600;
+        const canRetry = (isRateLimit || isServerErr) && attempt < MAX_ATTEMPTS - 1;
+
+        if (!canRetry) {
+          console.error('Error generating review:', error, info);
+          if (info.status === 401) {
+            throw new Error('OpenAI rejected the API key (401). Check it in Vine Tools > Price Settings.');
+          }
+          if (info.status === 429 && info.code === 'insufficient_quota') {
+            throw new Error('OpenAI quota exceeded — check your plan and billing at platform.openai.com. (' + (info.message || 'insufficient_quota') + ')');
+          }
+          if (info.status === 429) {
+            throw new Error('OpenAI rate limit hit and retries exhausted. ' + (info.message || 'Please wait a minute and try again.'));
+          }
+          if (info.status >= 500) {
+            throw new Error('OpenAI server error (' + info.status + ') after ' + (attempt + 1) + ' attempts. Try again shortly.');
+          }
+          if (info.status && info.message) {
+            throw new Error('OpenAI ' + info.status + ': ' + info.message);
+          }
+          throw error;
+        }
+
+        const retryAfterMs = parseRetryAfterMs(error.responseHeaders);
+        const backoff = BASE_DELAY_MS * Math.pow(2, attempt);
+        const delayMs = retryAfterMs != null ? retryAfterMs : backoff;
+        const reason = isRateLimit ? 'Rate limited' : ('Server error ' + info.status);
+        console.warn('[Vine Tools] ' + reason + ' — retrying in ' + Math.round(delayMs / 1000) + 's (attempt ' + (attempt + 2) + '/' + MAX_ATTEMPTS + ')');
+        if (typeof onRetry === 'function') {
+          onRetry({ attempt: attempt + 1, maxAttempts: MAX_ATTEMPTS, delayMs, reason });
+        }
+        await sleep(delayMs);
+        attempt++;
+      }
     }
   }
 
@@ -1473,7 +1553,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           description = descriptionElement.textContent.trim().substring(0, 1000);
         }
 
-        const review = await generateReview(description, stars, comments);
+        const review = await generateReview(description, stars, comments, ({ attempt, maxAttempts, delayMs, reason }) => {
+          showStatus(`${reason} — retrying in ${Math.round(delayMs / 1000)}s (attempt ${attempt + 1}/${maxAttempts})…`);
+        });
         const { title, body } = parseGeneratedReview(review);
 
         titleDiv.textContent = title;
