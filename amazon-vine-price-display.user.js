@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.41.7
+// @version      1.42.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -36,7 +36,10 @@
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     SAVED_SEARCHES_TIMESTAMP_KEY: 'vine_saved_searches_timestamp',
     COLOR_FILTER_KEY: 'vine_color_filter',
+    AI_PROVIDER_KEY: 'vine_ai_provider',
     OPENAI_API_KEY: 'vine_openai_api_key',
+    ANTHROPIC_API_KEY: 'vine_anthropic_api_key',
+    STANDARDCOMPUTE_API_KEY: 'vine_standardcompute_api_key',
     GITHUB_TOKEN_KEY: 'vine_github_token',
     GIST_ID_KEY: 'vine_gist_id',
     GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
@@ -91,6 +94,36 @@
       '.a-pagination li:first-child:not(.a-disabled) a'
     ]
   };
+
+  const AI_PROVIDERS = {
+    openai: {
+      label: 'OpenAI',
+      keyStorageKey: 'OPENAI_API_KEY',
+      keyPlaceholder: 'sk-...',
+      keyHelpHtml: 'Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>',
+      displayName: 'OpenAI'
+    },
+    anthropic: {
+      label: 'Anthropic',
+      keyStorageKey: 'ANTHROPIC_API_KEY',
+      keyPlaceholder: 'sk-ant-...',
+      keyHelpHtml: 'Get your key at <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color: var(--vine-link);">console.anthropic.com</a>',
+      displayName: 'Anthropic'
+    },
+    standardcompute: {
+      label: 'StandardCompute',
+      keyStorageKey: 'STANDARDCOMPUTE_API_KEY',
+      keyPlaceholder: 'Your StandardCompute API key',
+      keyHelpHtml: 'Calls <code>https://api.stdcmpt.com/v1/completions</code> with model <code>standardcompute</code>.',
+      displayName: 'StandardCompute'
+    }
+  };
+  const DEFAULT_AI_PROVIDER = 'openai';
+
+  function getActiveProviderId() {
+    const id = getStorage(CONFIG.AI_PROVIDER_KEY, DEFAULT_AI_PROVIDER);
+    return AI_PROVIDERS[id] ? id : DEFAULT_AI_PROVIDER;
+  }
 
   // Global references for modal control (used by keyboard shortcuts and close buttons)
   let openSettingsModal = null;
@@ -1205,7 +1238,9 @@
     };
   }
 
-  // Pull a human-readable error message + structured code out of an OpenAI error response.
+  // Pull a human-readable error message + structured code out of an AI provider error response.
+  // OpenAI and StandardCompute both use {error: {code|type, message}}. Anthropic uses
+  // {type: "error", error: {type, message}}, which is shape-compatible after the .error unwrap.
   function parseOpenAIError(err) {
     const status = err && err.status;
     let code = null;
@@ -1224,10 +1259,12 @@
 
   // AI Review Generator
   async function generateReview(productDescription, starRating, userComments, onRetry) {
-    const apiKey = getStorage(CONFIG.OPENAI_API_KEY, '');
+    const providerId = getActiveProviderId();
+    const provider = AI_PROVIDERS[providerId];
+    const apiKey = getStorage(CONFIG[provider.keyStorageKey], '');
 
     if (!apiKey) {
-      throw new Error('OpenAI API key not configured. Please add your API key in Vine Tools > Price Settings.');
+      throw new Error(provider.displayName + ' API key not configured. Please add your API key in Vine Tools > Price Settings.');
     }
 
     const sentiment = starRating >= 4 ? 'positive' : starRating >= 3 ? 'neutral' : 'negative';
@@ -1280,27 +1317,75 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
 Respond with a JSON object: {"title": "...", "body": "..."}`;
 
-    const requestOpts = {
-      method: 'POST',
-      url: 'https://api.openai.com/v1/chat/completions',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      data: JSON.stringify({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 700,
-        response_format: { type: 'json_object' }
-      })
-    };
+    let requestOpts;
+    let extractContent;
+    if (providerId === 'anthropic') {
+      requestOpts = {
+        method: 'POST',
+        url: 'https://api.anthropic.com/v1/messages',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        data: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 700,
+          temperature: 0.7,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }]
+        })
+      };
+      extractContent = (data) => {
+        const block = Array.isArray(data.content) ? data.content.find(b => b.type === 'text') : null;
+        return (block && block.text ? block.text : '').trim();
+      };
+    } else if (providerId === 'standardcompute') {
+      // StandardCompute exposes the legacy /completions endpoint, so flatten system+user
+      // into a single prompt and read .choices[0].text. No JSON mode — parseGeneratedReview's
+      // fallback handles non-JSON output.
+      requestOpts = {
+        method: 'POST',
+        url: 'https://api.stdcmpt.com/v1/completions',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        data: JSON.stringify({
+          model: 'standardcompute',
+          prompt: systemPrompt + '\n\n' + userPrompt,
+          temperature: 0.7,
+          max_tokens: 700
+        })
+      };
+      extractContent = (data) => (data.choices[0].text || '').trim();
+    } else {
+      requestOpts = {
+        method: 'POST',
+        url: 'https://api.openai.com/v1/chat/completions',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        data: JSON.stringify({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 700,
+          response_format: { type: 'json_object' }
+        })
+      };
+      extractContent = (data) => data.choices[0].message.content.trim();
+    }
+
+    const providerLabel = provider.displayName;
 
     // Retry transient 429 (rate_limit_exceeded) and 5xx with exponential backoff, honoring
-    // OpenAI's Retry-After header when present. Don't retry insufficient_quota — that's a
+    // the provider's Retry-After header when present. Don't retry insufficient_quota — that's a
     // billing issue and no amount of waiting fixes it.
     const MAX_ATTEMPTS = 4;
     const BASE_DELAY_MS = 1000;
@@ -1309,7 +1394,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       try {
         const response = await gmFetch(requestOpts);
         const data = JSON.parse(response.responseText);
-        return data.choices[0].message.content.trim();
+        return extractContent(data);
       } catch (error) {
         const info = parseOpenAIError(error);
         const isRateLimit = info.status === 429 && info.code !== 'insufficient_quota';
@@ -1319,19 +1404,19 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (!canRetry) {
           console.error('Error generating review:', error, info);
           if (info.status === 401) {
-            throw new Error('OpenAI rejected the API key (401). Check it in Vine Tools > Price Settings.');
+            throw new Error(providerLabel + ' rejected the API key (401). Check it in Vine Tools > Price Settings.');
           }
           if (info.status === 429 && info.code === 'insufficient_quota') {
-            throw new Error('OpenAI quota exceeded — check your plan and billing at platform.openai.com. (' + (info.message || 'insufficient_quota') + ')');
+            throw new Error(providerLabel + ' quota exceeded — check your plan and billing. (' + (info.message || 'insufficient_quota') + ')');
           }
           if (info.status === 429) {
-            throw new Error('OpenAI rate limit hit and retries exhausted. ' + (info.message || 'Please wait a minute and try again.'));
+            throw new Error(providerLabel + ' rate limit hit and retries exhausted. ' + (info.message || 'Please wait a minute and try again.'));
           }
           if (info.status >= 500) {
-            throw new Error('OpenAI server error (' + info.status + ') after ' + (attempt + 1) + ' attempts. Try again shortly.');
+            throw new Error(providerLabel + ' server error (' + info.status + ') after ' + (attempt + 1) + ' attempts. Try again shortly.');
           }
           if (info.status && info.message) {
-            throw new Error('OpenAI ' + info.status + ': ' + info.message);
+            throw new Error(providerLabel + ' ' + info.status + ': ' + info.message);
           }
           throw error;
         }
@@ -1970,6 +2055,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const autoAdvanceEnabled = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+      const activeProviderId = getActiveProviderId();
       const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
 
       dialog.innerHTML = `
@@ -2030,14 +2116,28 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         <div style="margin-bottom: 24px; padding-top: 24px; border-top: 1px solid var(--vine-border);">
           <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">AI Review Generator</label>
           <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">OpenAI API Key (optional):</label>
-            <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}" 
-              placeholder="sk-..." 
-              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <label for="vine-ai-provider" style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">AI Provider:</label>
+            <select id="vine-ai-provider"
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; background: #fff;">
+              ${Object.entries(AI_PROVIDERS).map(([id, p]) =>
+                `<option value="${id}" ${id === activeProviderId ? 'selected' : ''}>${escapeHtml(p.label)}</option>`
+              ).join('')}
+            </select>
             <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
-              Required for AI review generation. Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
+              Choose which service generates AI reviews. Only the selected provider's key is used.
             </div>
           </div>
+          ${Object.entries(AI_PROVIDERS).map(([id, p]) => `
+            <div class="vine-provider-fields" data-provider="${id}" style="margin-bottom: 12px; display: ${id === activeProviderId ? 'block' : 'none'};">
+              <label for="vine-key-${id}" style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">${escapeHtml(p.label)} API Key:</label>
+              <input type="password" id="vine-key-${id}" data-provider-key="${id}" value="${escapeHtml(getStorage(CONFIG[p.keyStorageKey], ''))}"
+                placeholder="${escapeHtml(p.keyPlaceholder)}"
+                style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+              <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
+                ${p.keyHelpHtml}
+              </div>
+            </div>
+          `).join('')}
         </div>
 
         <div style="margin-bottom: 24px;">
@@ -2183,8 +2283,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const redMaxInput = dialog.querySelector('#vine-red-max');
 
       const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
-      const openaiKeyInput = dialog.querySelector('#vine-openai-key');
+      const providerSelect = dialog.querySelector('#vine-ai-provider');
+      const providerFieldGroups = dialog.querySelectorAll('.vine-provider-fields');
       const githubTokenInput = dialog.querySelector('#vine-github-token');
+
+      providerSelect.addEventListener('change', () => {
+        providerFieldGroups.forEach(group => {
+          group.style.display = group.dataset.provider === providerSelect.value ? 'block' : 'none';
+        });
+      });
 
       const showStatus = makeShowStatus(statusDiv, 3000);
       closeBtn.addEventListener('click', closeSettingsModal);
@@ -2217,7 +2324,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
         setStorage(CONFIG.THRESHOLDS_KEY, newThresholds);
         setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
-        setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
+        const selectedProvider = AI_PROVIDERS[providerSelect.value] ? providerSelect.value : DEFAULT_AI_PROVIDER;
+        setStorage(CONFIG.AI_PROVIDER_KEY, selectedProvider);
+        providerFieldGroups.forEach(group => {
+          const id = group.dataset.provider;
+          const input = group.querySelector('input[data-provider-key]');
+          if (input) {
+            setStorage(CONFIG[AI_PROVIDERS[id].keyStorageKey], input.value.trim());
+          }
+        });
         setStorage(CONFIG.GITHUB_TOKEN_KEY, githubTokenInput.value.trim());
 
         cachedThresholds = newThresholds;

@@ -1,5 +1,12 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.42.0 - Selectable AI Provider (OpenAI / Anthropic / StandardCompute)
+
+- **Feature**: AI Review Generator now supports three providers. A new "AI Provider" dropdown in Vine Tools > Price Settings lets you choose between **OpenAI** (default, existing behavior with `gpt-3.5-turbo` + JSON mode), **Anthropic** (`claude-haiku-4-5-20251001` via `https://api.anthropic.com/v1/messages` with `anthropic-dangerous-direct-browser-access: true`), and **StandardCompute** (`standardcompute` model via `https://api.stdcmpt.com/v1/completions` — the legacy completions endpoint).
+- **Feature**: Each provider gets its own API-key field, shown only when that provider is selected. Existing OpenAI key is preserved — the previous storage key (`vine_openai_api_key`) is unchanged.
+- **Refactor**: `generateReview` branches on provider at request-build time. Anthropic and StandardCompute use different request schemas and response shapes; `parseGeneratedReview`'s three-tier fallback (JSON → newline → first-sentence) handles non-JSON-mode output from StandardCompute's completions endpoint.
+- **UX**: Error messages now name the active provider (e.g. "Anthropic rejected the API key (401)") instead of always saying "OpenAI". Retry/backoff logic for 429/5xx remains shared across providers.
+
 ## Version 1.41.7 - Retry & Friendlier Errors for OpenAI 429
 
 - **Fix**: "Generate Review" was bailing out with a bare `HTTP 429` on the very first rate-limit response. OpenAI's RPM/TPM limits and short bursts both surface as 429, but the script wasn't retrying, so a single overlap with another request killed the generation.
