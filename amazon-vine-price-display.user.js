@@ -2236,17 +2236,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const showStatus = makeShowStatus(statusDiv, 3000);
       closeBtn.addEventListener('click', closeSettingsModal);
 
-      if (aiProviderSelect) {
-        aiProviderSelect.addEventListener('change', () => {
-          if (aiProviderSelect.value === 'deepseek') {
-            openaiSection.style.display = 'none';
-            deepseekSection.style.display = '';
-          } else {
-            openaiSection.style.display = '';
-            deepseekSection.style.display = 'none';
-          }
-        });
-      }
+      aiProviderSelect.addEventListener('change', () => {
+        if (aiProviderSelect.value === 'deepseek') {
+          openaiSection.style.display = 'none';
+          deepseekSection.style.display = '';
+        } else {
+          openaiSection.style.display = '';
+          deepseekSection.style.display = 'none';
+        }
+      });
 
       saveBtn.addEventListener('click', () => {
         const greenMin = parseFloat(greenMinInput.value);
@@ -2278,9 +2276,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
         setStorage(CONFIG.GITHUB_TOKEN_KEY, githubTokenInput.value.trim());
-        if (aiProviderSelect) setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
-        if (deepseekKeyInput) setStorage(CONFIG.DEEPSEEK_API_KEY, deepseekKeyInput.value.trim());
-        if (deepseekModelInput) setStorage(CONFIG.DEEPSEEK_MODEL, deepseekModelInput.value.trim());
+        setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
+        setStorage(CONFIG.DEEPSEEK_API_KEY, deepseekKeyInput.value.trim());
+        setStorage(CONFIG.DEEPSEEK_MODEL, deepseekModelInput.value.trim());
 
         cachedThresholds = newThresholds;
         autoAdvance = autoAdvanceCheckbox.checked;
