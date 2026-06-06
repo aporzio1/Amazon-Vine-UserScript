@@ -2052,12 +2052,32 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         <div style="margin-bottom: 24px; padding-top: 24px; border-top: 1px solid var(--vine-border);">
           <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">AI Review Generator</label>
           <div style="margin-bottom: 12px;">
-            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">OpenAI API Key (optional):</label>
-            <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}" 
-              placeholder="sk-..." 
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">AI Provider:</label>
+            <select id="vine-ai-provider" style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; background: var(--vine-bg); color: var(--vine-fg);">
+              <option value="openai" ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'openai' ? 'selected' : ''}>OpenAI</option>
+              <option value="deepseek" ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+            </select>
+          </div>
+          <div id="vine-openai-section" style="margin-bottom: 12px; ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'deepseek' ? 'display: none;' : ''}">
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">OpenAI API Key:</label>
+            <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}"
+              placeholder="sk-..."
               style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
             <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
-              Required for AI review generation. Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
+              Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
+            </div>
+          </div>
+          <div id="vine-deepseek-section" style="margin-bottom: 12px; ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'openai' ? 'display: none;' : ''}">
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">DeepSeek API Key:</label>
+            <input type="password" id="vine-deepseek-key" value="${getStorage(CONFIG.DEEPSEEK_API_KEY, '')}"
+              placeholder="sk-..."
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; margin-bottom: 8px;">
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">DeepSeek Model:</label>
+            <input type="text" id="vine-deepseek-model" value="${getStorage(CONFIG.DEEPSEEK_MODEL, '') || 'deepseek-v4-flash'}"
+              placeholder="deepseek-v4-flash"
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
+              Get your key at <a href="https://platform.deepseek.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.deepseek.com</a>
             </div>
           </div>
         </div>
