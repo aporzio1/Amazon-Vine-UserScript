@@ -1239,11 +1239,19 @@
 
   // AI Review Generator
   async function generateReview(productDescription, starRating, userComments, onRetry) {
-    const apiKey = getStorage(CONFIG.OPENAI_API_KEY, '');
+    const providerKey = getStorage(CONFIG.AI_PROVIDER, 'openai');
+    const provider = CONFIG.PROVIDERS[providerKey] || CONFIG.PROVIDERS.openai;
+    const apiKey = provider === CONFIG.PROVIDERS.deepseek
+      ? getStorage(CONFIG.DEEPSEEK_API_KEY, '')
+      : getStorage(CONFIG.OPENAI_API_KEY, '');
 
     if (!apiKey) {
-      throw new Error('OpenAI API key not configured. Please add your API key in Vine Tools > Price Settings.');
+      throw new Error(`${provider.label} API key not configured. Please add your key in Vine Tools > Price Settings.`);
     }
+
+    const model = provider === CONFIG.PROVIDERS.deepseek
+      ? (getStorage(CONFIG.DEEPSEEK_MODEL, '') || provider.defaultModel)
+      : provider.defaultModel;
 
     const sentiment = starRating >= 4 ? 'positive' : starRating >= 3 ? 'neutral' : 'negative';
 
@@ -1297,13 +1305,13 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
     const requestOpts = {
       method: 'POST',
-      url: 'https://api.openai.com/v1/chat/completions',
+      url: provider.url,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
       data: JSON.stringify({
-        model: 'gpt-3.5-turbo',
+        model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
@@ -1315,8 +1323,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     };
 
     // Retry transient 429 (rate_limit_exceeded) and 5xx with exponential backoff, honoring
-    // OpenAI's Retry-After header when present. Don't retry insufficient_quota — that's a
-    // billing issue and no amount of waiting fixes it.
+    // Retry-After header when present. Don't retry insufficient_quota — that's a billing issue.
     const MAX_ATTEMPTS = 4;
     const BASE_DELAY_MS = 1000;
     let attempt = 0;
@@ -1334,19 +1341,19 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (!canRetry) {
           console.error('Error generating review:', error, info);
           if (info.status === 401) {
-            throw new Error('OpenAI rejected the API key (401). Check it in Vine Tools > Price Settings.');
+            throw new Error(`${provider.label} rejected the API key (401). Check it in Vine Tools > Price Settings.`);
           }
           if (info.status === 429 && info.code === 'insufficient_quota') {
-            throw new Error('OpenAI quota exceeded — check your plan and billing at platform.openai.com. (' + (info.message || 'insufficient_quota') + ')');
+            throw new Error(`${provider.label} quota exceeded — check your plan and billing. (${info.message || 'insufficient_quota'})`);
           }
           if (info.status === 429) {
-            throw new Error('OpenAI rate limit hit and retries exhausted. ' + (info.message || 'Please wait a minute and try again.'));
+            throw new Error(`${provider.label} rate limit hit and retries exhausted. ${info.message || 'Please wait a minute and try again.'}`);
           }
           if (info.status >= 500) {
-            throw new Error('OpenAI server error (' + info.status + ') after ' + (attempt + 1) + ' attempts. Try again shortly.');
+            throw new Error(`${provider.label} server error (${info.status}) after ${attempt + 1} attempts. Try again shortly.`);
           }
           if (info.status && info.message) {
-            throw new Error('OpenAI ' + info.status + ': ' + info.message);
+            throw new Error(`${provider.label} ${info.status}: ${info.message}`);
           }
           throw error;
         }
