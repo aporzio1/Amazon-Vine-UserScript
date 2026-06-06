@@ -37,6 +37,9 @@
     SAVED_SEARCHES_TIMESTAMP_KEY: 'vine_saved_searches_timestamp',
     COLOR_FILTER_KEY: 'vine_color_filter',
     OPENAI_API_KEY: 'vine_openai_api_key',
+    DEEPSEEK_API_KEY: 'vine_deepseek_api_key',
+    DEEPSEEK_MODEL: 'vine_deepseek_model',
+    AI_PROVIDER: 'vine_ai_provider',
     GITHUB_TOKEN_KEY: 'vine_github_token',
     GIST_ID_KEY: 'vine_gist_id',
     GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
@@ -89,7 +92,19 @@
       '.a-pagination .a-first a',
       'a[aria-label="Previous page"]',
       '.a-pagination li:first-child:not(.a-disabled) a'
-    ]
+    ],
+    PROVIDERS: {
+      openai: {
+        label: 'OpenAI',
+        url: 'https://api.openai.com/v1/chat/completions',
+        defaultModel: 'gpt-3.5-turbo'
+      },
+      deepseek: {
+        label: 'DeepSeek',
+        url: 'https://api.deepseek.com/chat/completions',
+        defaultModel: 'deepseek-v4-flash'
+      }
+    }
   };
 
   // Global references for modal control (used by keyboard shortcuts and close buttons)
