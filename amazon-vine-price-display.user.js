@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.42.1
+// @version      1.42.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -55,7 +55,7 @@
       YELLOW_MIN: 50,
       RED_MAX: 49.99
     },
-    DEFAULT_COLOR_FILTER: { green: true, yellow: true, red: true, purple: true },
+    DEFAULT_COLOR_FILTER: { green: true, yellow: true, red: true },
     AMAZON_DOMAINS: [
       'amazon.com', 'amazon.co.uk', 'amazon.ca', 'amazon.de',
       'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.co.jp',
@@ -521,7 +521,6 @@
   // UI helpers — called per-item on hot paths. getThresholds() handles format migration once at load.
   function getPriceColorSync(price) {
     const t = cachedThresholds || CONFIG.DEFAULT_THRESHOLDS;
-    if (price === 0) return 'purple';
     if (price >= t.GREEN_MIN) return 'green';
     if (price >= t.YELLOW_MIN) return 'yellow';
     return 'red';
@@ -952,7 +951,6 @@
     filterContainer.appendChild(hideCachedWrapper);
 
     const colors = [
-      { name: 'purple', label: '🟣 Purple ($0)', color: '#8b5cf6' },
       { name: 'green', label: '🟢 Green ($90+)', color: '#10b981' },
       { name: 'yellow', label: '🟡 Yellow', color: '#fbbf24' },
       { name: 'red', label: '🔴 Red', color: '#ef4444' }
@@ -2173,12 +2171,6 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
                 </tr>
                 <tr style="border-bottom: 1px solid var(--vine-border);">
                   <td style="padding: 12px;">
-                    <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">3</code>
-                  </td>
-                  <td style="padding: 12px; color: var(--vine-fg-muted);">Toggle Purple filter</td>
-                </tr>
-                <tr style="border-bottom: 1px solid var(--vine-border);">
-                  <td style="padding: 12px;">
                     <code style="background: var(--vine-surface); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 13px;">4</code>
                   </td>
                   <td style="padding: 12px; color: var(--vine-fg-muted);">Toggle Green filter</td>
@@ -2722,7 +2714,6 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     .vine-price-green  { background: #046044; color: #fff; }
     .vine-price-yellow { background: #FFD814; color: #0F1111; }
     .vine-price-red    { background: #B12704; color: #fff; }
-    .vine-price-purple { background: #6B21A8; color: #fff; }
 
     .vine-price-text {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -3101,7 +3092,6 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   const FILTER_HOTKEYS = {
     '1': 'vine-filter-hide-cached',
-    '3': 'vine-filter-purple',
     '4': 'vine-filter-green',
     '5': 'vine-filter-yellow',
     '6': 'vine-filter-red'

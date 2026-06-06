@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.42.2 - Remove Purple Filter
+
+- **UX**: Removed the purple ($0) filter — the checkbox, its hotkey (3), the badge style, and the $0 → purple color mapping. $0-ETV items now fall through to red like any other sub-threshold item.
+
 ## Version 1.42.1 - Stop Fabricating Personal Anecdotes in AI Reviews
 
 - **Fix**: AI-generated reviews were inventing personal stories (e.g. "I took this on a two-week European vacation") not provided by the user. The prompt now explicitly forbids fabricated trips, events, or life context and keeps the review grounded in what the product actually does.
