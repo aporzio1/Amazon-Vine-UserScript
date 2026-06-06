@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.42.1 - Stop Fabricating Personal Anecdotes in AI Reviews
+
+- **Fix**: AI-generated reviews were inventing personal stories (e.g. "I took this on a two-week European vacation") not provided by the user. The prompt now explicitly forbids fabricated trips, events, or life context and keeps the review grounded in what the product actually does.
+
 ## Version 1.42.0 - DeepSeek Provider Support
 
 - **Feature**: AI Review Generator now supports DeepSeek as an alternative AI provider alongside OpenAI. Select the active provider in Vine Tools > Price Settings via a new "AI Provider" dropdown.
