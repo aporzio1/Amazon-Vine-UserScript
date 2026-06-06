@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.42.0 - DeepSeek Provider Support
+
+- **Feature**: AI Review Generator now supports DeepSeek as an alternative AI provider alongside OpenAI. Select the active provider in Vine Tools > Price Settings via a new "AI Provider" dropdown.
+- **Feature**: DeepSeek model is configurable in Settings (default: `deepseek-v4-flash`). Switching providers shows/hides the relevant API key and model fields inline — no page reload required.
+- **Enhancement**: Error messages when an API key is missing now name the active provider (e.g., "DeepSeek API key not configured") for clarity.
+
 ## Version 1.41.7 - Retry & Friendlier Errors for OpenAI 429
 
 - **Fix**: "Generate Review" was bailing out with a bare `HTTP 429` on the very first rate-limit response. OpenAI's RPM/TPM limits and short bursts both surface as 429, but the script wasn't retrying, so a single overlap with another request killed the generation.
