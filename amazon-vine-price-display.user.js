@@ -61,14 +61,19 @@
       'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.co.jp',
       'amazon.com.au', 'amazon.in'
     ],
+    // Buybox containers searched first — prices found elsewhere in the document
+    // are often carousels ("Frequently bought together") or strikethrough list prices.
+    PRICE_SCOPE_SELECTORS: [
+      '#corePriceDisplay_desktop_feature_div',
+      '#corePrice_feature_div',
+      '#apex_desktop',
+      '#buybox'
+    ],
     PRICE_SELECTORS: [
-      '.a-price .a-offscreen',
+      '.a-price:not(.a-text-price) .a-offscreen',
       '#priceblock_ourprice',
       '#priceblock_dealprice',
-      '.a-price-whole',
-      '[data-a-color="price"] .a-offscreen',
-      '.a-price-symbol + .a-price-whole',
-      '.a-price .a-price-whole'
+      '[data-a-color="price"] .a-offscreen'
     ],
     VINE_ITEM_SELECTORS: [
       '.vvp-item-tile',
@@ -441,13 +446,19 @@
     });
   }
 
-  function setCachedPrice(asin, price, isSeen = true) {
-    // Add to pending updates
-    pendingCacheUpdates.set(asin, {
+  function setCachedPrice(asin, price, isSeen = true, extra = null) {
+    const entry = {
       price: price,
       isSeen: isSeen,
       timestamp: Date.now()
-    });
+    };
+    if (extra) {
+      if (extra.priceMax != null && extra.priceMax > price) entry.priceMax = extra.priceMax;
+      if (extra.isParent) entry.isParent = true;
+      if (extra.isEtv) entry.isEtv = true;
+    }
+    // Add to pending updates
+    pendingCacheUpdates.set(asin, entry);
 
     // Debounce the save operation (2 seconds)
     if (cacheUpdateTimeout) {
@@ -471,23 +482,45 @@
     }
   }
 
-  function extractPriceFromHTML(html) {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    for (const selector of CONFIG.PRICE_SELECTORS) {
-      const element = doc.querySelector(selector);
-      if (element) {
-        const priceText = element.textContent.trim();
-        const priceMatch = priceText.match(/\$?([\d,]+(?:\.\d{1,2})?)/);
-        if (priceMatch) {
-          const price = parseFloat(priceMatch[1].replace(/,/g, ''));
-          if (!isNaN(price) && price >= 0) {
-            return price;
-          }
+  function parsePriceText(text) {
+    const match = (text || '').match(/\$?([\d,]+(?:\.\d{1,2})?)/);
+    if (!match) return null;
+    const price = parseFloat(match[1].replace(/,/g, ''));
+    return (!isNaN(price) && price >= 0) ? price : null;
+  }
+
+  function extractPriceFromDoc(doc) {
+    const scopes = [];
+    for (const sel of CONFIG.PRICE_SCOPE_SELECTORS) {
+      const el = doc.querySelector(sel);
+      if (el) scopes.push(el);
+    }
+    if (scopes.length === 0) scopes.push(doc);
+    for (const scope of scopes) {
+      for (const selector of CONFIG.PRICE_SELECTORS) {
+        const element = scope.querySelector(selector);
+        if (element) {
+          const price = parsePriceText(element.textContent.trim());
+          if (price !== null) return price;
         }
       }
     }
     return null;
+  }
+
+  // Which ASIN the fetched page actually shows. Amazon serves a default child
+  // variant when asked for a parent ASIN, so this can differ from the requested one.
+  function extractPageAsin(html, doc) {
+    const m = html.match(/"currentAsin"\s*:\s*"([A-Z0-9]{10})"/i);
+    if (m) return m[1].toUpperCase();
+    const input = doc.querySelector('input[name="ASIN"]');
+    if (input && /^[A-Z0-9]{10}$/i.test(input.value)) return input.value.toUpperCase();
+    return null;
+  }
+
+  function extractPriceFromHTML(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return { price: extractPriceFromDoc(doc), pageAsin: extractPageAsin(html, doc) };
   }
 
   function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES) {
@@ -510,11 +543,122 @@
       url,
       onload: (response) => {
         if (response.status !== 200) return retry();
-        const price = extractPriceFromHTML(response.responseText);
-        if (price === null) return retry();
+        const { price, pageAsin } = extractPriceFromHTML(response.responseText);
+        // Page loaded fine but carries no price (pre-release / unavailable):
+        // retrying would just re-download the same page.
+        if (price === null) return callback(null);
+        // Amazon substituted a different variant (typically a parent's default
+        // child) — its price is not this ASIN's price.
+        if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
+          return callback({ price, isCached: false, unreliable: true });
+        }
         callback({ price, isCached: false });
       },
       onerror: retry
+    });
+  }
+
+  // ---- Vine recommendations API (parent-ASIN listings) ----
+  // A parent tile's link goes to /dp/{parentAsin}, where Amazon renders the
+  // default child's buybox — which is how a $16.99 accessory merged into a
+  // $299 listing shows as $299. The recommendations API (the same endpoint the
+  // "See details" modal uses) reports which child variations Vine actually
+  // offers, and — when present — their ETV (taxValue).
+
+  const vineApiQueue = [];
+  let vineApiActive = 0;
+  const VINE_API_MAX_CONCURRENT = 2;
+
+  function pumpVineApiQueue() {
+    while (vineApiActive < VINE_API_MAX_CONCURRENT && vineApiQueue.length > 0) {
+      const task = vineApiQueue.shift();
+      vineApiActive++;
+      task(() => {
+        vineApiActive--;
+        pumpVineApiQueue();
+      });
+    }
+  }
+
+  function fetchVineRecommendation(recId, callback) {
+    vineApiQueue.push((done) => {
+      const url = `${location.origin}/vine/api/recommendations/${encodeURIComponent(recId)}`;
+      gmFetch({ url, headers: { 'Accept': 'application/json' } })
+        .then(res => {
+          done();
+          let json = null;
+          try { json = JSON.parse(res.responseText); } catch (e) { /* HTML error page */ }
+          callback(json && json.result ? json.result : null);
+        })
+        .catch(err => {
+          // On 429, hold the slot until Retry-After elapses so we don't hammer the API.
+          const retryAfter = parseRetryAfterMs(err.responseHeaders);
+          setTimeout(done, err.status === 429 ? (retryAfter || 5000) : 0);
+          callback(null);
+        });
+    });
+    pumpVineApiQueue();
+  }
+
+  function numOrNull(v) {
+    const n = typeof v === 'string' ? parseFloat(v) : v;
+    return (typeof n === 'number' && isFinite(n) && n >= 0) ? n : null;
+  }
+
+  // Resolve the price (or range) of the variations Vine actually offers on a
+  // parent listing. Calls back with:
+  //   { price, priceMax, isEtv } — from the API (plus child pages if it lacks taxValue)
+  //   { price, approx: true }   — fell back to the parent page's default-child price
+  //   null                      — nothing resolvable
+  function fetchParentPrices(recId, parentUrl, callback) {
+    const origin = (() => {
+      try { return new URL(parentUrl, location.href).origin; } catch (e) { return location.origin; }
+    })();
+
+    const fallbackToParentPage = () => {
+      fetchPrice(parentUrl, null, (data) => {
+        callback(data ? { price: data.price, approx: true } : null);
+      });
+    };
+
+    fetchVineRecommendation(recId, (result) => {
+      if (!result) return fallbackToParentPage();
+      const variations = Array.isArray(result.variations) ? result.variations : [];
+
+      // Best case: ETV per variation — exact, and no page fetches needed.
+      const taxValues = [];
+      for (const v of variations) {
+        const tv = v && numOrNull(v.taxValue);
+        if (tv !== null) taxValues.push(tv);
+      }
+      const itemEtv = numOrNull(result.taxValue);
+      if (taxValues.length === 0 && itemEtv !== null) taxValues.push(itemEtv);
+      if (taxValues.length > 0) {
+        callback({ price: Math.min(...taxValues), priceMax: Math.max(...taxValues), isEtv: true });
+        return;
+      }
+
+      // No ETV in the response: probe the offered children's pages (capped).
+      const childAsins = variations
+        .map(v => v && v.asin)
+        .filter(a => /^[A-Z0-9]{10}$/i.test(a || ''))
+        .slice(0, 4);
+      if (childAsins.length === 0) return fallbackToParentPage();
+
+      const prices = [];
+      let pending = childAsins.length;
+      childAsins.forEach(childAsin => {
+        fetchPrice(`${origin}/dp/${childAsin}`, childAsin, (data) => {
+          if (data && !data.unreliable) prices.push(data.price);
+          if (--pending === 0) {
+            if (prices.length > 0) {
+              callback({ price: Math.min(...prices), priceMax: Math.max(...prices), isEtv: false });
+            } else {
+              fallbackToParentPage();
+            }
+          }
+        }, 0); // child probes: no retries
+      });
     });
   }
 
@@ -526,17 +670,45 @@
     return 'red';
   }
 
-  function createPriceBadge(price, isCached, isSeen, color) {
+  // priceData: { price, priceMax?, isEtv?, approx? } — priceMax renders a range
+  // (multi-variant listing), approx marks a wrong-variant fallback price.
+  function formatPriceLabel(priceData) {
+    const base = `$${priceData.price.toFixed(2)}`;
+    if (priceData.priceMax != null && priceData.priceMax > priceData.price) {
+      return `${base}–$${priceData.priceMax.toFixed(2)}`;
+    }
+    return priceData.approx ? `~${base}` : base;
+  }
+
+  function createPriceBadge(priceData, isCached, isSeen, color) {
+    const label = formatPriceLabel(priceData);
+    const isRange = priceData.priceMax != null && priceData.priceMax > priceData.price;
+
     const badge = document.createElement('div');
     badge.className = `vine-price-badge vine-price-${color}`;
-    badge.setAttribute('aria-label', `Product price: $${price.toFixed(2)}`);
+    badge.setAttribute('aria-label', isRange
+      ? `Product price range: ${label}`
+      : `Product price: ${label}`);
     badge.setAttribute('role', 'status');
     badge.setAttribute('data-price-color', color);
 
     const priceText = document.createElement('span');
     priceText.className = 'vine-price-text';
-    priceText.textContent = `$${price.toFixed(2)}`;
+    priceText.textContent = label;
+    if (priceData.isEtv) {
+      priceText.title = 'ETV (estimated tax value) reported by Vine';
+    } else if (priceData.approx) {
+      priceText.title = 'Approximate — Amazon showed a different variant of this listing';
+    }
     badge.appendChild(priceText);
+
+    if (isRange) {
+      const variantIndicator = document.createElement('span');
+      variantIndicator.className = 'vine-variant-indicator';
+      variantIndicator.textContent = '🔀';
+      variantIndicator.title = 'Multiple variants offered — price range shown';
+      badge.appendChild(variantIndicator);
+    }
 
     if (isCached) {
       const cacheIndicator = document.createElement('span');
@@ -640,15 +812,29 @@
     if (items.length === 0) return;
 
     const itemData = items.map(item => {
+      // The "See details" button input is authoritative: it carries the offer's
+      // ASIN, whether it's a variation parent, and the recommendation id the
+      // Vine API needs. The dp-link is the fallback for layout changes.
+      const detailsInput = item.querySelector('.vvp-details-btn input, input[data-recommendation-id]');
       const link = item.querySelector('a[href*="/dp/"]');
-      if (!link) return null;
-      const asin = extractASIN(link.href);
-      if (asin) {
-        // Store ASIN on item immediately for consistency
-        item.dataset.vineAsin = asin;
-        return { item, asin, url: link.href };
+      const inputAsin = detailsInput && detailsInput.dataset.asin;
+      const asin = (inputAsin && /^[A-Z0-9]{10}$/i.test(inputAsin))
+        ? inputAsin.toUpperCase()
+        : (link ? extractASIN(link.href) : null);
+      if (!asin) return null;
+      let origin = location.origin;
+      if (link) {
+        try { origin = new URL(link.href, location.href).origin; } catch (e) { /* keep location.origin */ }
       }
-      return null;
+      // Store ASIN on item immediately for consistency
+      item.dataset.vineAsin = asin;
+      return {
+        item,
+        asin,
+        url: link ? link.href : `${origin}/dp/${asin}`,
+        isParent: !!(detailsInput && detailsInput.dataset.isParentAsin === 'true'),
+        recId: detailsInput ? (detailsInput.dataset.recommendationId || null) : null
+      };
     }).filter(data => data && data.asin);
 
     if (itemData.length === 0) return;
@@ -668,57 +854,82 @@
       getHideCached((shouldHide) => {
         const uncachedItems = [];
 
-        itemData.forEach(({ item, asin, url }) => {
+        itemData.forEach(({ item, asin, url, isParent, recId }) => {
           const cached = cachedResults[asin];
-          if (cached && cached.price !== undefined && cached.price !== null) {
+          // Entries cached before parent detection existed hold the parent
+          // page's default-child price (the wrong product) — refetch them.
+          const staleParentEntry = isParent && cached && !cached.isParent;
+          if (cached && !staleParentEntry && cached.price !== undefined && cached.price !== null) {
             item.dataset.vineIsCached = 'true';
             item.dataset.vinePrice = cached.price;
+            if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
             // Default to true for legacy cache entries without isSeen property
             const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
             item.dataset.vineSeen = String(isSeen);
 
             const color = getPriceColorSync(cached.price);
-            const badge = createPriceBadge(cached.price, true, isSeen, color);
+            const badge = createPriceBadge(
+              { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
+              true, isSeen, color
+            );
             item.appendChild(badge);
             applyColorFilter(item, color);
           } else {
-            uncachedItems.push({ item, asin, url });
+            uncachedItems.push({ item, asin, url, isParent, recId });
           }
         });
 
-        uncachedItems.forEach(({ item, asin, url }) => {
+        uncachedItems.forEach(({ item, asin, url, isParent, recId }) => {
           const fetchId = `${asin}-${Date.now()}`;
           activeFetches.set(asin, fetchId);
 
-          fetchPrice(url, asin, (priceData) => {
-            if (activeFetches.get(asin) === fetchId) {
-              activeFetches.delete(asin);
-              if (priceData) {
-                const color = getPriceColorSync(priceData.price);
+          const handleResult = (priceData) => {
+            if (activeFetches.get(asin) !== fetchId) return;
+            activeFetches.delete(asin);
+            if (priceData) {
+              const color = getPriceColorSync(priceData.price);
 
-                // Store price
-                item.dataset.vinePrice = priceData.price;
+              // Store price (lowest of a range) — filters/sort key off this
+              item.dataset.vinePrice = priceData.price;
+              if (priceData.priceMax != null) item.dataset.vinePriceMax = priceData.priceMax;
 
-                // Calculate visibility (isSeen) based on filters
-                getColorFilter((filter) => {
-                  const isVisible = filter[color];
+              // Calculate visibility (isSeen) based on filters
+              getColorFilter((filter) => {
+                const isVisible = filter[color];
 
-                  // Always cache, set seen status based on visibility
-                  setCachedPrice(asin, priceData.price, isVisible);
+                // Cache reliable prices; approx (wrong-variant) prices would poison it
+                if (!priceData.approx) {
+                  setCachedPrice(asin, priceData.price, isVisible, {
+                    priceMax: priceData.priceMax,
+                    isParent,
+                    isEtv: priceData.isEtv
+                  });
+                }
 
-                  // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly)
-                  item.dataset.vineSeen = 'false';
-                });
+                // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly)
+                item.dataset.vineSeen = 'false';
+              });
 
-                const badge = createPriceBadge(priceData.price, false, false, color);
-                item.appendChild(badge);
-                applyColorFilter(item, color);
-              } else if (isPreReleaseItem(item)) {
-                // If price fetch failed but it IS a pre-release item
-                applyColorFilter(item, 'gray');
-              }
+              const badge = createPriceBadge(priceData, false, false, color);
+              item.appendChild(badge);
+              applyColorFilter(item, color);
+            } else if (isPreReleaseItem(item)) {
+              // If price fetch failed but it IS a pre-release item
+              applyColorFilter(item, 'gray');
             }
-          });
+          };
+
+          if (isParent && recId) {
+            fetchParentPrices(recId, url, handleResult);
+          } else {
+            fetchPrice(url, asin, (data) => {
+              if (data && data.unreliable) {
+                handleResult({ price: data.price, approx: true });
+              } else {
+                handleResult(data);
+              }
+            });
+          }
         });
 
         // Check if all items are hidden and auto-advance if enabled
@@ -2282,8 +2493,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         allItems.forEach(item => {
           const badge = item.querySelector('.vine-price-badge');
           if (badge) {
-            const priceText = badge.querySelector('.vine-price-text').textContent;
-            const price = parseFloat(priceText.replace('$', ''));
+            // dataset holds the lowest price of a range — badge text may be "$a–$b"
+            const price = parseFloat(item.dataset.vinePrice);
             if (!isNaN(price)) {
               const color = getPriceColorSync(price);
               badge.className = `vine-price-badge vine-price-${color}`;
@@ -2725,6 +2936,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       opacity: 0.9;
       cursor: help;
       animation: pulse 2s ease-in-out infinite;
+    }
+
+    .vine-variant-indicator {
+      font-size: 11px;
+      cursor: help;
     }
 
     @keyframes pulse {
