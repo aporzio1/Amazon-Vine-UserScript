@@ -35,6 +35,9 @@
     AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     SAVED_SEARCHES_TIMESTAMP_KEY: 'vine_saved_searches_timestamp',
+    KEYWORD_LISTS_KEY: 'vine_keyword_lists',
+    KEYWORD_LISTS_TIMESTAMP_KEY: 'vine_keyword_lists_timestamp',
+    EXTERNAL_LINKS_KEY: 'vine_external_links',
     COLOR_FILTER_KEY: 'vine_color_filter',
     OPENAI_API_KEY: 'vine_openai_api_key',
     DEEPSEEK_API_KEY: 'vine_deepseek_api_key',
@@ -45,6 +48,7 @@
     GITHUB_TOKEN_KEY: 'vine_github_token',
     GIST_ID_KEY: 'vine_gist_id',
     GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
+    GIST_KEYWORDS_ID_KEY: 'vine_gist_keywords_id',
     LAST_SYNC_KEY: 'vine_last_sync',
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
@@ -778,6 +782,118 @@
     return false;
   }
 
+  // ---- Tile title + keyword lists + external price-check links ----
+
+  function getTileTitle(item) {
+    if (item.dataset.vineTitle) return item.dataset.vineTitle;
+    // .a-truncate-full holds the un-ellipsized title (visually hidden)
+    const fullTitle = item.querySelector('.vvp-item-product-title-container .a-truncate-full');
+    let title = fullTitle ? fullTitle.textContent.trim() : '';
+    if (!title) {
+      const link = item.querySelector('a[href*="/dp/"]');
+      title = link ? link.textContent.trim() : '';
+    }
+    if (!title) {
+      const img = item.querySelector('img[alt]');
+      title = img ? img.alt.trim() : '';
+    }
+    item.dataset.vineTitle = title;
+    return title;
+  }
+
+  // Keyword lists: 'block' hides tiles, 'highlight' outlines them. Loaded once,
+  // matched synchronously (applyColorFilter is already two callbacks deep), and
+  // memoized per tile against a revision counter so edits invalidate cleanly.
+  let cachedKeywordLists = null;
+  let keywordListsRevision = 0;
+
+  function getKeywordListsSync() {
+    if (cachedKeywordLists === null) {
+      const stored = getStorage(CONFIG.KEYWORD_LISTS_KEY, {});
+      cachedKeywordLists = {
+        highlight: Array.isArray(stored && stored.highlight) ? stored.highlight : [],
+        block: Array.isArray(stored && stored.block) ? stored.block : []
+      };
+    }
+    return cachedKeywordLists;
+  }
+
+  function setKeywordLists(lists) {
+    cachedKeywordLists = lists;
+    keywordListsRevision++;
+    setStorage(CONFIG.KEYWORD_LISTS_KEY, lists);
+    setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, Date.now());
+  }
+
+  function getKeywordStateSync(item) {
+    if (item.dataset.vineKwRev === String(keywordListsRevision) && item.dataset.vineKwState) {
+      return item.dataset.vineKwState;
+    }
+    const lists = getKeywordListsSync();
+    let state = 'none';
+    if (lists.block.length || lists.highlight.length) {
+      const title = getTileTitle(item).toLowerCase();
+      if (lists.block.some(kw => kw && title.includes(kw.toLowerCase()))) {
+        state = 'block'; // block wins over highlight
+      } else if (lists.highlight.some(kw => kw && title.includes(kw.toLowerCase()))) {
+        state = 'highlight';
+      }
+    }
+    item.dataset.vineKwState = state;
+    item.dataset.vineKwRev = String(keywordListsRevision);
+    return state;
+  }
+
+  // Keepa's URL scheme uses a numeric marketplace id, not the domain.
+  const KEEPA_DOMAIN_IDS = {
+    'amazon.com': 1, 'amazon.co.uk': 2, 'amazon.de': 3, 'amazon.fr': 4,
+    'amazon.co.jp': 5, 'amazon.ca': 6, 'amazon.it': 8, 'amazon.es': 9,
+    'amazon.in': 10, 'amazon.com.au': 11
+  };
+
+  function keepaDomainId() {
+    const host = location.hostname;
+    for (const [domain, id] of Object.entries(KEEPA_DOMAIN_IDS)) {
+      if (host.endsWith(domain)) return id;
+    }
+    return 1;
+  }
+
+  let externalLinksEnabled = true;
+  let externalLinksLoaded = false;
+
+  function getExternalLinksEnabled() {
+    if (!externalLinksLoaded) {
+      externalLinksLoaded = true;
+      externalLinksEnabled = getStorage(CONFIG.EXTERNAL_LINKS_KEY, true);
+    }
+    return externalLinksEnabled;
+  }
+
+  function attachExternalLinks(badge, asin, title) {
+    if (!getExternalLinksEnabled()) return;
+    const row = document.createElement('span');
+    row.className = 'vine-ext-links';
+    const links = [
+      { label: 'K', tip: 'Price history on Keepa', url: `https://keepa.com/#!product/${keepaDomainId()}-${asin}` },
+      { label: 'C', tip: 'Price history on CamelCamelCamel', url: `https://camelcamelcamel.com/product/${asin}` },
+      { label: 'G', tip: 'Search Google for this product', url: `https://www.google.com/search?q=${encodeURIComponent(title || asin)}` }
+    ];
+    links.forEach(({ label, tip, url }) => {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = label;
+      a.title = tip;
+      a.className = 'vine-ext-link';
+      // keep tile click handlers out of it, but let the link itself navigate
+      a.addEventListener('click', (e) => e.stopPropagation());
+      row.appendChild(a);
+    });
+    badge.appendChild(row);
+  }
+
   // Apply color filter to an item.
   // NOTE: we intentionally don't flip item.dataset.vineSeen to 'true' when a not-seen item is shown,
   // otherwise toggling "Hide Seen" back on would make it vanish mid-session. The cache is bumped
@@ -788,7 +904,9 @@
       getHideCached((shouldHideCached) => {
         const isSeen = item.dataset.vineSeen === 'true';
         const colorAllowed = filter[color];
-        const shouldShow = colorAllowed && !(isSeen && shouldHideCached);
+        const kwState = getKeywordStateSync(item);
+        item.classList.toggle('vine-keyword-highlight', kwState === 'highlight');
+        const shouldShow = colorAllowed && !(isSeen && shouldHideCached) && kwState !== 'block';
 
         if (shouldShow) {
           item.style.display = '';
@@ -879,6 +997,7 @@
               { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
               true, isSeen, color
             );
+            attachExternalLinks(badge, asin, getTileTitle(item));
             item.appendChild(badge);
             applyColorFilter(item, color);
           } else {
@@ -918,6 +1037,7 @@
               });
 
               const badge = createPriceBadge(priceData, false, false, color);
+              attachExternalLinks(badge, asin, getTileTitle(item));
               item.appendChild(badge);
               applyColorFilter(item, color);
             } else if (isPreReleaseItem(item)) {
@@ -2104,6 +2224,203 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     }
   }
 
+  // Sync Keyword Lists with GitHub Gist (last-write-wins by timestamp;
+  // equal timestamps union-merge both sides).
+  async function syncKeywordsWithGitHub(token) {
+    if (!token) throw new Error('No GitHub Token provided');
+
+    const gistFileName = 'vine_keyword_lists.json';
+    let gistId = getStorage(CONFIG.GIST_KEYWORDS_ID_KEY, null);
+    const gh = (endpoint, method, body) => githubRequest(token, endpoint, method, body);
+
+    try {
+      if (!gistId) {
+        const gists = await gh('gists');
+        const existingGist = gists.find(g => g.files && g.files[gistFileName]);
+        if (existingGist) {
+          gistId = existingGist.id;
+        } else {
+          const initialData = { timestamp: 0, highlight: [], block: [] };
+          const newGist = await gh('gists', 'POST', {
+            description: 'Amazon Vine Keyword Lists (Synced)',
+            public: false,
+            files: { [gistFileName]: { content: JSON.stringify(initialData) } }
+          });
+          gistId = newGist.id;
+        }
+        setStorage(CONFIG.GIST_KEYWORDS_ID_KEY, gistId);
+      }
+
+      const gistData = await gh(`gists/${gistId}`);
+      let remoteData = { timestamp: 0, highlight: [], block: [] };
+      if (gistData.files && gistData.files[gistFileName]) {
+        try {
+          const parsed = JSON.parse(gistData.files[gistFileName].content);
+          remoteData = {
+            timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : 0,
+            highlight: Array.isArray(parsed.highlight) ? parsed.highlight : [],
+            block: Array.isArray(parsed.block) ? parsed.block : []
+          };
+        } catch (e) {
+          console.error('Error parsing remote keyword lists:', e);
+        }
+      }
+
+      const localLists = getKeywordListsSync();
+      const localTimestamp = getStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, 0);
+
+      const applyRemote = (lists) => {
+        cachedKeywordLists = lists;
+        keywordListsRevision++;
+        setStorage(CONFIG.KEYWORD_LISTS_KEY, lists);
+        setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, remoteData.timestamp);
+        applyColorFilterToAllItems();
+      };
+
+      let finalLists;
+      if (localTimestamp > remoteData.timestamp) {
+        finalLists = localLists;
+        await gh(`gists/${gistId}`, 'PATCH', {
+          files: { [gistFileName]: { content: JSON.stringify({ timestamp: localTimestamp, ...localLists }) } }
+        });
+      } else if (remoteData.timestamp > localTimestamp) {
+        finalLists = { highlight: remoteData.highlight, block: remoteData.block };
+        applyRemote(finalLists);
+      } else {
+        const union = (a, b) => Array.from(new Set([...a, ...b]));
+        finalLists = {
+          highlight: union(localLists.highlight, remoteData.highlight),
+          block: union(localLists.block, remoteData.block)
+        };
+        const changedLocal = finalLists.highlight.length !== localLists.highlight.length
+          || finalLists.block.length !== localLists.block.length;
+        const changedRemote = finalLists.highlight.length !== remoteData.highlight.length
+          || finalLists.block.length !== remoteData.block.length;
+        if (changedLocal) applyRemote(finalLists);
+        if (changedRemote) {
+          await gh(`gists/${gistId}`, 'PATCH', {
+            files: { [gistFileName]: { content: JSON.stringify({ timestamp: localTimestamp || Date.now(), ...finalLists }) } }
+          });
+        }
+      }
+
+      return { success: true, count: finalLists.highlight.length + finalLists.block.length };
+
+    } catch (error) {
+      console.error('Keywords sync failed:', error);
+      throw error;
+    }
+  }
+
+
+  // Stats dashboard — recomputed on every tab open in one pass over the cache
+  // (which can hold tens of thousands of entries: counters only, no sorting).
+  function renderStatsTab(container) {
+    if (!container) return;
+    flushCacheUpdates(); // include debounced writes
+    getCache((cache) => {
+      const now = Date.now();
+      const DAY = 24 * 60 * 60 * 1000;
+      const startOfToday = new Date().setHours(0, 0, 0, 0);
+
+      let total = 0;
+      const ageBuckets = { '< 1 day': 0, '1–3 days': 0, '3–7 days': 0 };
+      let seenToday = 0;
+      let seenThisWeek = 0;
+      const priceBuckets = [
+        { label: '$0–10', min: 0, max: 10, count: 0 },
+        { label: '$10–25', min: 10, max: 25, count: 0 },
+        { label: '$25–50', min: 25, max: 50, count: 0 },
+        { label: '$50–100', min: 50, max: 100, count: 0 },
+        { label: '$100–200', min: 100, max: 200, count: 0 },
+        { label: '$200+', min: 200, max: Infinity, count: 0 }
+      ];
+
+      for (const asin in cache) {
+        const entry = cache[asin];
+        if (!entry || typeof entry.timestamp !== 'number') continue;
+        const age = now - entry.timestamp;
+        if (age > CONFIG.CACHE_DURATION) continue;
+        total++;
+        if (age < DAY) ageBuckets['< 1 day']++;
+        else if (age < 3 * DAY) ageBuckets['1–3 days']++;
+        else ageBuckets['3–7 days']++;
+        if (entry.isSeen !== false) {
+          if (entry.timestamp >= startOfToday) seenToday++;
+          if (age <= 7 * DAY) seenThisWeek++;
+        }
+        const price = typeof entry.price === 'number' ? entry.price : parseFloat(entry.price);
+        if (!isNaN(price)) {
+          const bucket = priceBuckets.find(b => price >= b.min && price < b.max);
+          if (bucket) bucket.count++;
+        }
+      }
+
+      const pageItems = document.querySelectorAll('[data-vine-price-processed="true"]');
+      let pageHidden = 0;
+      pageItems.forEach(item => { if (item.dataset.vineHidden === 'true') pageHidden++; });
+
+      container.replaceChildren();
+
+      const addHeading = (text) => {
+        const h = document.createElement('div');
+        h.style.cssText = 'font-weight: 600; color: var(--vine-fg); margin: 16px 0 8px;';
+        h.textContent = text;
+        container.appendChild(h);
+      };
+      const addLine = (label, value) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; color: var(--vine-fg-muted);';
+        const l = document.createElement('span');
+        l.textContent = label;
+        const v = document.createElement('span');
+        v.style.cssText = 'font-weight: 600; color: var(--vine-fg);';
+        v.textContent = value;
+        row.appendChild(l);
+        row.appendChild(v);
+        container.appendChild(row);
+      };
+
+      addHeading('📦 Price Cache');
+      addLine('Cached items', String(total));
+      Object.entries(ageBuckets).forEach(([label, count]) => addLine(`Age ${label}`, String(count)));
+      addLine('Seen today', String(seenToday));
+      addLine('Seen this week', String(seenThisWeek));
+
+      addHeading('💰 Price Distribution');
+      const maxCount = Math.max(1, ...priceBuckets.map(b => b.count));
+      priceBuckets.forEach(({ label, min, count }) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px;';
+        const l = document.createElement('span');
+        l.style.cssText = 'width: 70px; color: var(--vine-fg-muted); flex-shrink: 0;';
+        l.textContent = label;
+        const barWrap = document.createElement('div');
+        barWrap.style.cssText = 'flex: 1; background: var(--vine-surface); border-radius: 3px; height: 14px;';
+        const bar = document.createElement('div');
+        const color = getPriceColorSync(min + 0.01);
+        const barColor = color === 'green' ? '#046044' : color === 'yellow' ? '#FFD814' : '#B12704';
+        bar.style.cssText = `width: ${Math.round(count / maxCount * 100)}%; background: ${barColor}; height: 100%; border-radius: 3px; min-width: ${count > 0 ? 2 : 0}px;`;
+        barWrap.appendChild(bar);
+        const c = document.createElement('span');
+        c.style.cssText = 'width: 50px; text-align: right; color: var(--vine-fg); font-weight: 600;';
+        c.textContent = String(count);
+        row.appendChild(l);
+        row.appendChild(barWrap);
+        row.appendChild(c);
+        container.appendChild(row);
+      });
+
+      addHeading('📄 Current Page');
+      if (pageItems.length === 0) {
+        addLine('Items', 'n/a (not on an items page)');
+      } else {
+        addLine('Items processed', String(pageItems.length));
+        addLine('Visible', String(pageItems.length - pageHidden));
+        addLine('Hidden by filters', String(pageHidden));
+      }
+    });
+  }
 
   // Settings UI
   function createSettingsUI() {
@@ -2249,6 +2566,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
       const aiProvider = getStorage(CONFIG.AI_PROVIDER, 'openai');
+      const externalLinks = getStorage(CONFIG.EXTERNAL_LINKS_KEY, true);
 
       dialog.innerHTML = `
         <div class="vine-modal-header">
@@ -2258,6 +2576,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
         <div class="vine-tabs" role="tablist">
           <button type="button" id="tab-searches" class="vine-tab" role="tab">Saved Searches</button>
+          <button type="button" id="tab-keywords" class="vine-tab" role="tab">Keywords</button>
+          <button type="button" id="tab-stats" class="vine-tab" role="tab">Stats</button>
           <button type="button" id="tab-sync" class="vine-tab" role="tab">Cloud Sync</button>
           <button type="button" id="tab-price" class="vine-tab" role="tab">Price Settings</button>
           <button type="button" id="tab-shortcuts" class="vine-tab" role="tab">Shortcuts</button>
@@ -2302,6 +2622,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           </label>
           <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px; margin-left: 26px;">
             Automatically go to the next page when all items on the current page are hidden
+          </div>
+        </div>
+
+        <div style="margin-bottom: 24px;">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="vine-external-links" ${externalLinks ? 'checked' : ''}
+              style="margin-right: 8px; width: 18px; height: 18px;">
+            <span style="font-weight: 600; color: var(--vine-fg);">Show price-check links on badges</span>
+          </label>
+          <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px; margin-left: 26px;">
+            K = Keepa, C = CamelCamelCamel, G = Google search (applies to newly loaded items)
           </div>
         </div>
 
@@ -2379,6 +2710,33 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
               ${savedSearches.length === 0 ? '<div style="padding: 20px; text-align: center; color: var(--vine-fg-muted); background: var(--vine-surface); border-radius: 6px;">No saved searches yet. Add one above!</div>' : ''}
             </div>
           </div>
+        </div>
+
+        <div id="content-keywords" class="vine-tab-content" style="display: none;">
+          <div style="margin-bottom: 24px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: var(--vine-fg);">✨ Highlight Keywords</label>
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-bottom: 8px;">Items whose title contains one of these get an orange glow.</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <input type="text" id="vine-kw-highlight-input" placeholder="e.g. 'ssd', 'torque wrench'"
+                style="flex: 1; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+              <button type="button" id="vine-kw-highlight-add" class="vine-btn-primary" style="white-space: nowrap;">Add</button>
+            </div>
+            <div id="vine-kw-highlight-list" class="vine-kw-chips"></div>
+          </div>
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: var(--vine-fg);">🚫 Block Keywords</label>
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-bottom: 8px;">Items whose title contains one of these are hidden from the grid.</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <input type="text" id="vine-kw-block-input" placeholder="e.g. 'ring sizer', 'phone case'"
+                style="flex: 1; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+              <button type="button" id="vine-kw-block-add" class="vine-btn-primary" style="white-space: nowrap;">Add</button>
+            </div>
+            <div id="vine-kw-block-list" class="vine-kw-chips"></div>
+          </div>
+        </div>
+
+        <div id="content-stats" class="vine-tab-content" style="display: none;">
+          <div id="vine-stats-body"></div>
         </div>
 
         <div id="content-sync" class="vine-tab-content" style="display: none;">
@@ -2489,6 +2847,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const redMaxInput = dialog.querySelector('#vine-red-max');
 
       const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
+      const externalLinksCheckbox = dialog.querySelector('#vine-external-links');
       const openaiKeyInput = dialog.querySelector('#vine-openai-key');
       const githubTokenInput = dialog.querySelector('#vine-github-token');
       const aiProviderSelect = dialog.querySelector('#vine-ai-provider');
@@ -2537,6 +2896,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
         setStorage(CONFIG.THRESHOLDS_KEY, newThresholds);
         setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
+        setStorage(CONFIG.EXTERNAL_LINKS_KEY, externalLinksCheckbox.checked);
+        externalLinksEnabled = externalLinksCheckbox.checked;
+        externalLinksLoaded = true;
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
         setStorage(CONFIG.GITHUB_TOKEN_KEY, githubTokenInput.value.trim());
         setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
@@ -2578,17 +2940,23 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       // Tab switching
       const tabPrice = dialog.querySelector('#tab-price');
       const tabSearches = dialog.querySelector('#tab-searches');
+      const tabKeywords = dialog.querySelector('#tab-keywords');
+      const tabStats = dialog.querySelector('#tab-stats');
       const tabSync = dialog.querySelector('#tab-sync');
       const tabShortcuts = dialog.querySelector('#tab-shortcuts');
 
       const contentPrice = dialog.querySelector('#content-price');
       const contentSearches = dialog.querySelector('#content-searches');
+      const contentKeywords = dialog.querySelector('#content-keywords');
+      const contentStats = dialog.querySelector('#content-stats');
       const contentSync = dialog.querySelector('#content-sync');
       const contentShortcuts = dialog.querySelector('#content-shortcuts');
 
       const tabMap = {
         price: [tabPrice, contentPrice],
         searches: [tabSearches, contentSearches],
+        keywords: [tabKeywords, contentKeywords],
+        stats: [tabStats, contentStats],
         sync: [tabSync, contentSync],
         shortcuts: [tabShortcuts, contentShortcuts]
       };
@@ -2603,14 +2971,87 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         activeTab.classList.add('vine-tab-active');
         activeTab.setAttribute('aria-selected', 'true');
         activeContent.style.display = 'block';
+        if (tab === 'stats') renderStatsTab(dialog.querySelector('#vine-stats-body'));
       }
 
       tabPrice.addEventListener('click', () => { switchTab('price'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'price'); });
       tabSearches.addEventListener('click', () => { switchTab('searches'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'searches'); });
+      tabKeywords.addEventListener('click', () => { switchTab('keywords'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'keywords'); });
+      tabStats.addEventListener('click', () => { switchTab('stats'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'stats'); });
       tabSync.addEventListener('click', () => { switchTab('sync'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'sync'); });
       tabShortcuts.addEventListener('click', () => { switchTab('shortcuts'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'shortcuts'); });
 
       switchTab(getStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'searches'));
+
+      // Keyword list management
+      function syncKeywordsInBackground() {
+        const token = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+        if (!token) return;
+        syncKeywordsWithGitHub(token).catch(err => console.error('Background keywords sync failed:', err));
+      }
+
+      function renderKeywordChips() {
+        ['highlight', 'block'].forEach(listName => {
+          const container = dialog.querySelector(`#vine-kw-${listName}-list`);
+          if (!container) return;
+          container.replaceChildren();
+          const lists = getKeywordListsSync();
+          if (lists[listName].length === 0) {
+            const empty = document.createElement('span');
+            empty.className = 'vine-kw-empty';
+            empty.textContent = 'No keywords yet.';
+            container.appendChild(empty);
+            return;
+          }
+          lists[listName].forEach(kw => {
+            const chip = document.createElement('span');
+            chip.className = 'vine-kw-chip';
+            const text = document.createElement('span');
+            text.textContent = kw;
+            chip.appendChild(text);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'vine-kw-chip-remove';
+            remove.textContent = '✕';
+            remove.setAttribute('aria-label', `Remove keyword "${kw}"`);
+            remove.addEventListener('click', () => {
+              const current = getKeywordListsSync();
+              setKeywordLists({
+                ...current,
+                [listName]: current[listName].filter(k => k !== kw)
+              });
+              renderKeywordChips();
+              applyColorFilterToAllItems();
+              syncKeywordsInBackground();
+            });
+            chip.appendChild(remove);
+            container.appendChild(chip);
+          });
+        });
+      }
+
+      function wireKeywordAdd(listName) {
+        const input = dialog.querySelector(`#vine-kw-${listName}-input`);
+        const addBtn = dialog.querySelector(`#vine-kw-${listName}-add`);
+        const add = () => {
+          const kw = input.value.trim().toLowerCase();
+          if (!kw) return;
+          const current = getKeywordListsSync();
+          if (!current[listName].includes(kw)) {
+            setKeywordLists({ ...current, [listName]: [...current[listName], kw] });
+          }
+          input.value = '';
+          renderKeywordChips();
+          applyColorFilterToAllItems();
+          syncKeywordsInBackground();
+        };
+        addBtn.addEventListener('click', add);
+        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+      }
+
+      wireKeywordAdd('highlight');
+      wireKeywordAdd('block');
+      renderKeywordChips();
 
       // Helper to sync searches in the background
       async function syncSearchesInBackground() {
@@ -2643,13 +3084,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.GITHUB_TOKEN_KEY, token);
 
         try {
-          // Sync both cache and searches
-          const [cacheResult, searchesResult] = await Promise.all([
+          // Sync cache, searches, and keyword lists
+          const [cacheResult, searchesResult, keywordsResult] = await Promise.all([
             syncWithGitHub(token),
-            syncSearchesWithGitHub(token)
+            syncSearchesWithGitHub(token),
+            syncKeywordsWithGitHub(token)
           ]);
 
-          showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches)`);
+          showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches, ${keywordsResult.count} keywords)`);
+          renderKeywordChips();
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
 
           // Refresh the searches list in case new ones were synced
@@ -3002,6 +3445,70 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     .vine-variant-indicator {
       font-size: 11px;
       cursor: help;
+    }
+
+    /* External price-check links inside the badge */
+    .vine-ext-links {
+      display: inline-flex;
+      gap: 5px;
+      margin-left: 4px;
+      padding-left: 5px;
+      border-left: 1px solid rgba(255, 255, 255, 0.35);
+    }
+    .vine-price-yellow .vine-ext-links { border-left-color: rgba(15, 17, 17, 0.25); }
+    .vine-ext-link {
+      color: inherit !important;
+      font-size: 11px;
+      font-weight: 700;
+      text-decoration: none;
+      opacity: 0.85;
+    }
+    .vine-ext-link:hover {
+      opacity: 1;
+      text-decoration: underline;
+    }
+
+    /* Keyword highlight — outline, not border (border shifts grid layout) */
+    .vine-keyword-highlight {
+      outline: 3px solid #C7511F !important;
+      outline-offset: -3px;
+      box-shadow: 0 0 8px rgba(199, 81, 31, 0.5);
+    }
+
+    /* Keyword chips in the settings modal */
+    .vine-kw-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .vine-kw-empty {
+      font-size: 12px;
+      color: var(--vine-fg-muted);
+      padding: 4px 0;
+    }
+    .vine-kw-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--vine-surface);
+      border: 1px solid var(--vine-border);
+      border-radius: 14px;
+      padding: 4px 6px 4px 12px;
+      font-size: 13px;
+      color: var(--vine-fg);
+    }
+    .vine-kw-chip-remove {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--vine-fg-muted);
+      font-size: 12px;
+      padding: 2px 5px;
+      border-radius: 50%;
+    }
+    .vine-kw-chip-remove:hover {
+      background: var(--vine-secondary-hover);
+      color: var(--vine-danger);
     }
 
     @keyframes pulse {
@@ -3470,6 +3977,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           syncSearchesWithGitHub(githubToken)
             .then(result => console.log(`Vine Price Display: Searches auto-sync complete (${result.count} searches)`))
             .catch(err => console.error('Vine Price Display: Searches auto-sync failed', err));
+          syncKeywordsWithGitHub(githubToken)
+            .then(result => console.log(`Vine Price Display: Keywords auto-sync complete (${result.count} keywords)`))
+            .catch(err => console.error('Vine Price Display: Keywords auto-sync failed', err));
         }, 2000);
       }
 
