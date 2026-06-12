@@ -914,11 +914,18 @@
           item.style.display = '';
           item.dataset.vineHidden = 'false';
 
-          if (!isSeen && item.dataset.vineSeenPersisted !== 'true') {
+          if (!isSeen && item.dataset.vineSeenPersisted !== 'true' && item.dataset.vineApprox !== 'true') {
             const asin = item.dataset.vineAsin;
             const price = parseFloat(item.dataset.vinePrice);
             if (asin && !isNaN(price)) {
-              setCachedPrice(asin, price, true);
+              // carry the variant metadata through, or this rewrite would strip
+              // isParent and force a refetch of parent items on every load
+              const priceMax = parseFloat(item.dataset.vinePriceMax);
+              setCachedPrice(asin, price, true, {
+                priceMax: isNaN(priceMax) ? null : priceMax,
+                isParent: item.dataset.vineIsParent === 'true',
+                isEtv: item.dataset.vineIsEtv === 'true'
+              });
               item.dataset.vineSeenPersisted = 'true';
             }
           }
@@ -955,6 +962,9 @@
       }
       // Store ASIN on item immediately for consistency
       item.dataset.vineAsin = asin;
+      if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
+        item.dataset.vineIsParent = 'true';
+      }
       return {
         item,
         asin,
@@ -990,6 +1000,7 @@
             item.dataset.vineIsCached = 'true';
             item.dataset.vinePrice = cached.price;
             if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
+            if (cached.isEtv) item.dataset.vineIsEtv = 'true';
             // Default to true for legacy cache entries without isSeen property
             const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
             item.dataset.vineSeen = String(isSeen);
@@ -1020,6 +1031,8 @@
               // Store price (lowest of a range) — filters/sort key off this
               item.dataset.vinePrice = priceData.price;
               if (priceData.priceMax != null) item.dataset.vinePriceMax = priceData.priceMax;
+              if (priceData.isEtv) item.dataset.vineIsEtv = 'true';
+              if (priceData.approx) item.dataset.vineApprox = 'true';
 
               // Calculate visibility (isSeen) based on filters
               getColorFilter((filter) => {
