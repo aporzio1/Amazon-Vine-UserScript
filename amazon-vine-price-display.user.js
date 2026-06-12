@@ -39,6 +39,8 @@
     OPENAI_API_KEY: 'vine_openai_api_key',
     DEEPSEEK_API_KEY: 'vine_deepseek_api_key',
     DEEPSEEK_MODEL: 'vine_deepseek_model',
+    CLAUDE_API_KEY: 'vine_claude_api_key',
+    CLAUDE_MODEL: 'vine_claude_model',
     AI_PROVIDER: 'vine_ai_provider',
     GITHUB_TOKEN_KEY: 'vine_github_token',
     GIST_ID_KEY: 'vine_gist_id',
@@ -108,6 +110,11 @@
         label: 'DeepSeek',
         url: 'https://api.deepseek.com/chat/completions',
         defaultModel: 'deepseek-v4-flash'
+      },
+      claude: {
+        label: 'Claude (Anthropic)',
+        url: 'https://api.anthropic.com/v1/messages',
+        defaultModel: 'claude-opus-4-8'
       }
     }
   };
@@ -1450,17 +1457,23 @@
   async function generateReview(productDescription, starRating, userComments, onRetry) {
     const providerKey = getStorage(CONFIG.AI_PROVIDER, 'openai');
     const provider = CONFIG.PROVIDERS[providerKey] || CONFIG.PROVIDERS.openai;
-    const apiKey = provider === CONFIG.PROVIDERS.deepseek
-      ? getStorage(CONFIG.DEEPSEEK_API_KEY, '')
-      : getStorage(CONFIG.OPENAI_API_KEY, '');
+    const isDeepseek = provider === CONFIG.PROVIDERS.deepseek;
+    const isClaude = provider === CONFIG.PROVIDERS.claude;
+    const apiKey = isClaude
+      ? getStorage(CONFIG.CLAUDE_API_KEY, '')
+      : isDeepseek
+        ? getStorage(CONFIG.DEEPSEEK_API_KEY, '')
+        : getStorage(CONFIG.OPENAI_API_KEY, '');
 
     if (!apiKey) {
       throw new Error(`${provider.label} API key not configured. Please add your key in Vine Tools > Price Settings.`);
     }
 
-    const model = provider === CONFIG.PROVIDERS.deepseek
-      ? (getStorage(CONFIG.DEEPSEEK_MODEL, '') || provider.defaultModel)
-      : provider.defaultModel;
+    const model = isClaude
+      ? (getStorage(CONFIG.CLAUDE_MODEL, '') || provider.defaultModel)
+      : isDeepseek
+        ? (getStorage(CONFIG.DEEPSEEK_MODEL, '') || provider.defaultModel)
+        : provider.defaultModel;
 
     const sentiment = starRating >= 4 ? 'positive' : starRating >= 3 ? 'neutral' : 'negative';
 
@@ -1513,24 +1526,46 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
 Respond with a JSON object: {"title": "...", "body": "..."}`;
 
-    const requestOpts = {
-      method: 'POST',
-      url: provider.url,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      data: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 700,
-        response_format: { type: 'json_object' }
-      })
-    };
+    // Anthropic's Messages API differs from the OpenAI-compatible providers:
+    // auth via x-api-key + anthropic-version, system prompt is a top-level
+    // field, no response_format (the prompt's JSON contract + parse fallbacks
+    // cover that), and recent Claude models reject sampling params.
+    const requestOpts = isClaude
+      ? {
+        method: 'POST',
+        url: provider.url,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        data: JSON.stringify({
+          model,
+          max_tokens: 1024,
+          system: systemPrompt,
+          messages: [
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      }
+      : {
+        method: 'POST',
+        url: provider.url,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        data: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 700,
+          response_format: { type: 'json_object' }
+        })
+      };
 
     // Retry transient 429 (rate_limit_exceeded) and 5xx with exponential backoff, honoring
     // Retry-After header when present. Don't retry insufficient_quota — that's a billing issue.
@@ -1541,6 +1576,16 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       try {
         const response = await gmFetch(requestOpts);
         const data = JSON.parse(response.responseText);
+        if (isClaude) {
+          if (data.stop_reason === 'refusal') {
+            throw new Error('Claude declined to generate this review. Try adjusting your comments.');
+          }
+          const textBlock = (data.content || []).find(b => b.type === 'text');
+          if (!textBlock || !textBlock.text) {
+            throw new Error('Claude returned no text content.');
+          }
+          return textBlock.text.trim();
+        }
         return data.choices[0].message.content.trim();
       } catch (error) {
         const info = parseOpenAIError(error);
@@ -2203,6 +2248,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
+      const aiProvider = getStorage(CONFIG.AI_PROVIDER, 'openai');
 
       dialog.innerHTML = `
         <div class="vine-modal-header">
@@ -2264,11 +2310,12 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           <div style="margin-bottom: 12px;">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">AI Provider:</label>
             <select id="vine-ai-provider" style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; background: var(--vine-bg); color: var(--vine-fg);">
-              <option value="openai" ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'openai' ? 'selected' : ''}>OpenAI</option>
-              <option value="deepseek" ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+              <option value="openai" ${aiProvider === 'openai' ? 'selected' : ''}>OpenAI</option>
+              <option value="deepseek" ${aiProvider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+              <option value="claude" ${aiProvider === 'claude' ? 'selected' : ''}>Claude (Anthropic)</option>
             </select>
           </div>
-          <div id="vine-openai-section" style="margin-bottom: 12px; ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'deepseek' ? 'display: none;' : ''}">
+          <div id="vine-openai-section" style="margin-bottom: 12px; ${aiProvider !== 'openai' ? 'display: none;' : ''}">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">OpenAI API Key:</label>
             <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}"
               placeholder="sk-..."
@@ -2277,7 +2324,20 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
               Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
             </div>
           </div>
-          <div id="vine-deepseek-section" style="margin-bottom: 12px; ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'openai' ? 'display: none;' : ''}">
+          <div id="vine-claude-section" style="margin-bottom: 12px; ${aiProvider !== 'claude' ? 'display: none;' : ''}">
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Anthropic API Key:</label>
+            <input type="password" id="vine-claude-key" value="${getStorage(CONFIG.CLAUDE_API_KEY, '')}"
+              placeholder="sk-ant-..."
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; margin-bottom: 8px;">
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Claude Model:</label>
+            <input type="text" id="vine-claude-model" value="${getStorage(CONFIG.CLAUDE_MODEL, '') || 'claude-opus-4-8'}"
+              placeholder="claude-opus-4-8"
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
+              Get your key at <a href="https://platform.claude.com/" target="_blank" style="color: var(--vine-link);">platform.claude.com</a>
+            </div>
+          </div>
+          <div id="vine-deepseek-section" style="margin-bottom: 12px; ${aiProvider !== 'deepseek' ? 'display: none;' : ''}">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">DeepSeek API Key:</label>
             <input type="password" id="vine-deepseek-key" value="${getStorage(CONFIG.DEEPSEEK_API_KEY, '')}"
               placeholder="sk-..."
@@ -2434,20 +2494,19 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const aiProviderSelect = dialog.querySelector('#vine-ai-provider');
       const deepseekKeyInput = dialog.querySelector('#vine-deepseek-key');
       const deepseekModelInput = dialog.querySelector('#vine-deepseek-model');
+      const claudeKeyInput = dialog.querySelector('#vine-claude-key');
+      const claudeModelInput = dialog.querySelector('#vine-claude-model');
       const openaiSection = dialog.querySelector('#vine-openai-section');
       const deepseekSection = dialog.querySelector('#vine-deepseek-section');
+      const claudeSection = dialog.querySelector('#vine-claude-section');
 
       const showStatus = makeShowStatus(statusDiv, 3000);
       closeBtn.addEventListener('click', closeSettingsModal);
 
       aiProviderSelect.addEventListener('change', () => {
-        if (aiProviderSelect.value === 'deepseek') {
-          openaiSection.style.display = 'none';
-          deepseekSection.style.display = '';
-        } else {
-          openaiSection.style.display = '';
-          deepseekSection.style.display = 'none';
-        }
+        openaiSection.style.display = aiProviderSelect.value === 'openai' ? '' : 'none';
+        deepseekSection.style.display = aiProviderSelect.value === 'deepseek' ? '' : 'none';
+        claudeSection.style.display = aiProviderSelect.value === 'claude' ? '' : 'none';
       });
 
       saveBtn.addEventListener('click', () => {
@@ -2483,6 +2542,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
         setStorage(CONFIG.DEEPSEEK_API_KEY, deepseekKeyInput.value.trim());
         setStorage(CONFIG.DEEPSEEK_MODEL, deepseekModelInput.value.trim());
+        setStorage(CONFIG.CLAUDE_API_KEY, claudeKeyInput.value.trim());
+        setStorage(CONFIG.CLAUDE_MODEL, claudeModelInput.value.trim());
 
         cachedThresholds = newThresholds;
         autoAdvance = autoAdvanceCheckbox.checked;
