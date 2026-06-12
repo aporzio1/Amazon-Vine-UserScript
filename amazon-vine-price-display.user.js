@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.42.2
+// @version      1.43.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -35,14 +35,22 @@
     AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     SAVED_SEARCHES_TIMESTAMP_KEY: 'vine_saved_searches_timestamp',
+    KEYWORD_LISTS_KEY: 'vine_keyword_lists',
+    KEYWORD_LISTS_TIMESTAMP_KEY: 'vine_keyword_lists_timestamp',
+    EXTERNAL_LINKS_KEY: 'vine_external_links',
+    SORT_ORDER_KEY: 'vine_sort_order',
+    INFINITE_SCROLL_KEY: 'vine_infinite_scroll',
     COLOR_FILTER_KEY: 'vine_color_filter',
     OPENAI_API_KEY: 'vine_openai_api_key',
     DEEPSEEK_API_KEY: 'vine_deepseek_api_key',
     DEEPSEEK_MODEL: 'vine_deepseek_model',
+    CLAUDE_API_KEY: 'vine_claude_api_key',
+    CLAUDE_MODEL: 'vine_claude_model',
     AI_PROVIDER: 'vine_ai_provider',
     GITHUB_TOKEN_KEY: 'vine_github_token',
     GIST_ID_KEY: 'vine_gist_id',
     GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
+    GIST_KEYWORDS_ID_KEY: 'vine_gist_keywords_id',
     LAST_SYNC_KEY: 'vine_last_sync',
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
@@ -61,14 +69,19 @@
       'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.co.jp',
       'amazon.com.au', 'amazon.in'
     ],
+    // Buybox containers searched first — prices found elsewhere in the document
+    // are often carousels ("Frequently bought together") or strikethrough list prices.
+    PRICE_SCOPE_SELECTORS: [
+      '#corePriceDisplay_desktop_feature_div',
+      '#corePrice_feature_div',
+      '#apex_desktop',
+      '#buybox'
+    ],
     PRICE_SELECTORS: [
-      '.a-price .a-offscreen',
+      '.a-price:not(.a-text-price) .a-offscreen',
       '#priceblock_ourprice',
       '#priceblock_dealprice',
-      '.a-price-whole',
-      '[data-a-color="price"] .a-offscreen',
-      '.a-price-symbol + .a-price-whole',
-      '.a-price .a-price-whole'
+      '[data-a-color="price"] .a-offscreen'
     ],
     VINE_ITEM_SELECTORS: [
       '.vvp-item-tile',
@@ -103,6 +116,11 @@
         label: 'DeepSeek',
         url: 'https://api.deepseek.com/chat/completions',
         defaultModel: 'deepseek-v4-flash'
+      },
+      claude: {
+        label: 'Claude (Anthropic)',
+        url: 'https://api.anthropic.com/v1/messages',
+        defaultModel: 'claude-opus-4-8'
       }
     }
   };
@@ -441,13 +459,19 @@
     });
   }
 
-  function setCachedPrice(asin, price, isSeen = true) {
-    // Add to pending updates
-    pendingCacheUpdates.set(asin, {
+  function setCachedPrice(asin, price, isSeen = true, extra = null) {
+    const entry = {
       price: price,
       isSeen: isSeen,
       timestamp: Date.now()
-    });
+    };
+    if (extra) {
+      if (extra.priceMax != null && extra.priceMax > price) entry.priceMax = extra.priceMax;
+      if (extra.isParent) entry.isParent = true;
+      if (extra.isEtv) entry.isEtv = true;
+    }
+    // Add to pending updates
+    pendingCacheUpdates.set(asin, entry);
 
     // Debounce the save operation (2 seconds)
     if (cacheUpdateTimeout) {
@@ -471,23 +495,45 @@
     }
   }
 
-  function extractPriceFromHTML(html) {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    for (const selector of CONFIG.PRICE_SELECTORS) {
-      const element = doc.querySelector(selector);
-      if (element) {
-        const priceText = element.textContent.trim();
-        const priceMatch = priceText.match(/\$?([\d,]+(?:\.\d{1,2})?)/);
-        if (priceMatch) {
-          const price = parseFloat(priceMatch[1].replace(/,/g, ''));
-          if (!isNaN(price) && price >= 0) {
-            return price;
-          }
+  function parsePriceText(text) {
+    const match = (text || '').match(/\$?([\d,]+(?:\.\d{1,2})?)/);
+    if (!match) return null;
+    const price = parseFloat(match[1].replace(/,/g, ''));
+    return (!isNaN(price) && price >= 0) ? price : null;
+  }
+
+  function extractPriceFromDoc(doc) {
+    const scopes = [];
+    for (const sel of CONFIG.PRICE_SCOPE_SELECTORS) {
+      const el = doc.querySelector(sel);
+      if (el) scopes.push(el);
+    }
+    if (scopes.length === 0) scopes.push(doc);
+    for (const scope of scopes) {
+      for (const selector of CONFIG.PRICE_SELECTORS) {
+        const element = scope.querySelector(selector);
+        if (element) {
+          const price = parsePriceText(element.textContent.trim());
+          if (price !== null) return price;
         }
       }
     }
     return null;
+  }
+
+  // Which ASIN the fetched page actually shows. Amazon serves a default child
+  // variant when asked for a parent ASIN, so this can differ from the requested one.
+  function extractPageAsin(html, doc) {
+    const m = html.match(/"currentAsin"\s*:\s*"([A-Z0-9]{10})"/i);
+    if (m) return m[1].toUpperCase();
+    const input = doc.querySelector('input[name="ASIN"]');
+    if (input && /^[A-Z0-9]{10}$/i.test(input.value)) return input.value.toUpperCase();
+    return null;
+  }
+
+  function extractPriceFromHTML(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return { price: extractPriceFromDoc(doc), pageAsin: extractPageAsin(html, doc) };
   }
 
   function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES) {
@@ -510,11 +556,122 @@
       url,
       onload: (response) => {
         if (response.status !== 200) return retry();
-        const price = extractPriceFromHTML(response.responseText);
-        if (price === null) return retry();
+        const { price, pageAsin } = extractPriceFromHTML(response.responseText);
+        // Page loaded fine but carries no price (pre-release / unavailable):
+        // retrying would just re-download the same page.
+        if (price === null) return callback(null);
+        // Amazon substituted a different variant (typically a parent's default
+        // child) — its price is not this ASIN's price.
+        if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
+          return callback({ price, isCached: false, unreliable: true });
+        }
         callback({ price, isCached: false });
       },
       onerror: retry
+    });
+  }
+
+  // ---- Vine recommendations API (parent-ASIN listings) ----
+  // A parent tile's link goes to /dp/{parentAsin}, where Amazon renders the
+  // default child's buybox — which is how a $16.99 accessory merged into a
+  // $299 listing shows as $299. The recommendations API (the same endpoint the
+  // "See details" modal uses) reports which child variations Vine actually
+  // offers, and — when present — their ETV (taxValue).
+
+  const vineApiQueue = [];
+  let vineApiActive = 0;
+  const VINE_API_MAX_CONCURRENT = 2;
+
+  function pumpVineApiQueue() {
+    while (vineApiActive < VINE_API_MAX_CONCURRENT && vineApiQueue.length > 0) {
+      const task = vineApiQueue.shift();
+      vineApiActive++;
+      task(() => {
+        vineApiActive--;
+        pumpVineApiQueue();
+      });
+    }
+  }
+
+  function fetchVineRecommendation(recId, callback) {
+    vineApiQueue.push((done) => {
+      const url = `${location.origin}/vine/api/recommendations/${encodeURIComponent(recId)}`;
+      gmFetch({ url, headers: { 'Accept': 'application/json' } })
+        .then(res => {
+          done();
+          let json = null;
+          try { json = JSON.parse(res.responseText); } catch (e) { /* HTML error page */ }
+          callback(json && json.result ? json.result : null);
+        })
+        .catch(err => {
+          // On 429, hold the slot until Retry-After elapses so we don't hammer the API.
+          const retryAfter = parseRetryAfterMs(err.responseHeaders);
+          setTimeout(done, err.status === 429 ? (retryAfter || 5000) : 0);
+          callback(null);
+        });
+    });
+    pumpVineApiQueue();
+  }
+
+  function numOrNull(v) {
+    const n = typeof v === 'string' ? parseFloat(v) : v;
+    return (typeof n === 'number' && isFinite(n) && n >= 0) ? n : null;
+  }
+
+  // Resolve the price (or range) of the variations Vine actually offers on a
+  // parent listing. Calls back with:
+  //   { price, priceMax, isEtv } — from the API (plus child pages if it lacks taxValue)
+  //   { price, approx: true }   — fell back to the parent page's default-child price
+  //   null                      — nothing resolvable
+  function fetchParentPrices(recId, parentUrl, callback) {
+    const origin = (() => {
+      try { return new URL(parentUrl, location.href).origin; } catch (e) { return location.origin; }
+    })();
+
+    const fallbackToParentPage = () => {
+      fetchPrice(parentUrl, null, (data) => {
+        callback(data ? { price: data.price, approx: true } : null);
+      });
+    };
+
+    fetchVineRecommendation(recId, (result) => {
+      if (!result) return fallbackToParentPage();
+      const variations = Array.isArray(result.variations) ? result.variations : [];
+
+      // Best case: ETV per variation — exact, and no page fetches needed.
+      const taxValues = [];
+      for (const v of variations) {
+        const tv = v && numOrNull(v.taxValue);
+        if (tv !== null) taxValues.push(tv);
+      }
+      const itemEtv = numOrNull(result.taxValue);
+      if (taxValues.length === 0 && itemEtv !== null) taxValues.push(itemEtv);
+      if (taxValues.length > 0) {
+        callback({ price: Math.min(...taxValues), priceMax: Math.max(...taxValues), isEtv: true });
+        return;
+      }
+
+      // No ETV in the response: probe the offered children's pages (capped).
+      const childAsins = variations
+        .map(v => v && v.asin)
+        .filter(a => /^[A-Z0-9]{10}$/i.test(a || ''))
+        .slice(0, 4);
+      if (childAsins.length === 0) return fallbackToParentPage();
+
+      const prices = [];
+      let pending = childAsins.length;
+      childAsins.forEach(childAsin => {
+        fetchPrice(`${origin}/dp/${childAsin}`, childAsin, (data) => {
+          if (data && !data.unreliable) prices.push(data.price);
+          if (--pending === 0) {
+            if (prices.length > 0) {
+              callback({ price: Math.min(...prices), priceMax: Math.max(...prices), isEtv: false });
+            } else {
+              fallbackToParentPage();
+            }
+          }
+        }, 0); // child probes: no retries
+      });
     });
   }
 
@@ -526,17 +683,45 @@
     return 'red';
   }
 
-  function createPriceBadge(price, isCached, isSeen, color) {
+  // priceData: { price, priceMax?, isEtv?, approx? } — priceMax renders a range
+  // (multi-variant listing), approx marks a wrong-variant fallback price.
+  function formatPriceLabel(priceData) {
+    const base = `$${priceData.price.toFixed(2)}`;
+    if (priceData.priceMax != null && priceData.priceMax > priceData.price) {
+      return `${base}–$${priceData.priceMax.toFixed(2)}`;
+    }
+    return priceData.approx ? `~${base}` : base;
+  }
+
+  function createPriceBadge(priceData, isCached, isSeen, color) {
+    const label = formatPriceLabel(priceData);
+    const isRange = priceData.priceMax != null && priceData.priceMax > priceData.price;
+
     const badge = document.createElement('div');
     badge.className = `vine-price-badge vine-price-${color}`;
-    badge.setAttribute('aria-label', `Product price: $${price.toFixed(2)}`);
+    badge.setAttribute('aria-label', isRange
+      ? `Product price range: ${label}`
+      : `Product price: ${label}`);
     badge.setAttribute('role', 'status');
     badge.setAttribute('data-price-color', color);
 
     const priceText = document.createElement('span');
     priceText.className = 'vine-price-text';
-    priceText.textContent = `$${price.toFixed(2)}`;
+    priceText.textContent = label;
+    if (priceData.isEtv) {
+      priceText.title = 'ETV (estimated tax value) reported by Vine';
+    } else if (priceData.approx) {
+      priceText.title = 'Approximate — Amazon showed a different variant of this listing';
+    }
     badge.appendChild(priceText);
+
+    if (isRange) {
+      const variantIndicator = document.createElement('span');
+      variantIndicator.className = 'vine-variant-indicator';
+      variantIndicator.textContent = '🔀';
+      variantIndicator.title = 'Multiple variants offered — price range shown';
+      badge.appendChild(variantIndicator);
+    }
 
     if (isCached) {
       const cacheIndicator = document.createElement('span');
@@ -599,6 +784,118 @@
     return false;
   }
 
+  // ---- Tile title + keyword lists + external price-check links ----
+
+  function getTileTitle(item) {
+    if (item.dataset.vineTitle) return item.dataset.vineTitle;
+    // .a-truncate-full holds the un-ellipsized title (visually hidden)
+    const fullTitle = item.querySelector('.vvp-item-product-title-container .a-truncate-full');
+    let title = fullTitle ? fullTitle.textContent.trim() : '';
+    if (!title) {
+      const link = item.querySelector('a[href*="/dp/"]');
+      title = link ? link.textContent.trim() : '';
+    }
+    if (!title) {
+      const img = item.querySelector('img[alt]');
+      title = img ? img.alt.trim() : '';
+    }
+    item.dataset.vineTitle = title;
+    return title;
+  }
+
+  // Keyword lists: 'block' hides tiles, 'highlight' outlines them. Loaded once,
+  // matched synchronously (applyColorFilter is already two callbacks deep), and
+  // memoized per tile against a revision counter so edits invalidate cleanly.
+  let cachedKeywordLists = null;
+  let keywordListsRevision = 0;
+
+  function getKeywordListsSync() {
+    if (cachedKeywordLists === null) {
+      const stored = getStorage(CONFIG.KEYWORD_LISTS_KEY, {});
+      cachedKeywordLists = {
+        highlight: Array.isArray(stored && stored.highlight) ? stored.highlight : [],
+        block: Array.isArray(stored && stored.block) ? stored.block : []
+      };
+    }
+    return cachedKeywordLists;
+  }
+
+  function setKeywordLists(lists) {
+    cachedKeywordLists = lists;
+    keywordListsRevision++;
+    setStorage(CONFIG.KEYWORD_LISTS_KEY, lists);
+    setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, Date.now());
+  }
+
+  function getKeywordStateSync(item) {
+    if (item.dataset.vineKwRev === String(keywordListsRevision) && item.dataset.vineKwState) {
+      return item.dataset.vineKwState;
+    }
+    const lists = getKeywordListsSync();
+    let state = 'none';
+    if (lists.block.length || lists.highlight.length) {
+      const title = getTileTitle(item).toLowerCase();
+      if (lists.block.some(kw => kw && title.includes(kw.toLowerCase()))) {
+        state = 'block'; // block wins over highlight
+      } else if (lists.highlight.some(kw => kw && title.includes(kw.toLowerCase()))) {
+        state = 'highlight';
+      }
+    }
+    item.dataset.vineKwState = state;
+    item.dataset.vineKwRev = String(keywordListsRevision);
+    return state;
+  }
+
+  // Keepa's URL scheme uses a numeric marketplace id, not the domain.
+  const KEEPA_DOMAIN_IDS = {
+    'amazon.com': 1, 'amazon.co.uk': 2, 'amazon.de': 3, 'amazon.fr': 4,
+    'amazon.co.jp': 5, 'amazon.ca': 6, 'amazon.it': 8, 'amazon.es': 9,
+    'amazon.in': 10, 'amazon.com.au': 11
+  };
+
+  function keepaDomainId() {
+    const host = location.hostname;
+    for (const [domain, id] of Object.entries(KEEPA_DOMAIN_IDS)) {
+      if (host.endsWith(domain)) return id;
+    }
+    return 1;
+  }
+
+  let externalLinksEnabled = true;
+  let externalLinksLoaded = false;
+
+  function getExternalLinksEnabled() {
+    if (!externalLinksLoaded) {
+      externalLinksLoaded = true;
+      externalLinksEnabled = getStorage(CONFIG.EXTERNAL_LINKS_KEY, true);
+    }
+    return externalLinksEnabled;
+  }
+
+  function attachExternalLinks(badge, asin, title) {
+    if (!getExternalLinksEnabled()) return;
+    const row = document.createElement('span');
+    row.className = 'vine-ext-links';
+    const links = [
+      { label: 'K', tip: 'Price history on Keepa', url: `https://keepa.com/#!product/${keepaDomainId()}-${asin}` },
+      { label: 'C', tip: 'Price history on CamelCamelCamel', url: `https://camelcamelcamel.com/product/${asin}` },
+      { label: 'G', tip: 'Search Google for this product', url: `https://www.google.com/search?q=${encodeURIComponent(title || asin)}` }
+    ];
+    links.forEach(({ label, tip, url }) => {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = label;
+      a.title = tip;
+      a.className = 'vine-ext-link';
+      // keep tile click handlers out of it, but let the link itself navigate
+      a.addEventListener('click', (e) => e.stopPropagation());
+      row.appendChild(a);
+    });
+    badge.appendChild(row);
+  }
+
   // Apply color filter to an item.
   // NOTE: we intentionally don't flip item.dataset.vineSeen to 'true' when a not-seen item is shown,
   // otherwise toggling "Hide Seen" back on would make it vanish mid-session. The cache is bumped
@@ -609,17 +906,26 @@
       getHideCached((shouldHideCached) => {
         const isSeen = item.dataset.vineSeen === 'true';
         const colorAllowed = filter[color];
-        const shouldShow = colorAllowed && !(isSeen && shouldHideCached);
+        const kwState = getKeywordStateSync(item);
+        item.classList.toggle('vine-keyword-highlight', kwState === 'highlight');
+        const shouldShow = colorAllowed && !(isSeen && shouldHideCached) && kwState !== 'block';
 
         if (shouldShow) {
           item.style.display = '';
           item.dataset.vineHidden = 'false';
 
-          if (!isSeen && item.dataset.vineSeenPersisted !== 'true') {
+          if (!isSeen && item.dataset.vineSeenPersisted !== 'true' && item.dataset.vineApprox !== 'true') {
             const asin = item.dataset.vineAsin;
             const price = parseFloat(item.dataset.vinePrice);
             if (asin && !isNaN(price)) {
-              setCachedPrice(asin, price, true);
+              // carry the variant metadata through, or this rewrite would strip
+              // isParent and force a refetch of parent items on every load
+              const priceMax = parseFloat(item.dataset.vinePriceMax);
+              setCachedPrice(asin, price, true, {
+                priceMax: isNaN(priceMax) ? null : priceMax,
+                isParent: item.dataset.vineIsParent === 'true',
+                isEtv: item.dataset.vineIsEtv === 'true'
+              });
               item.dataset.vineSeenPersisted = 'true';
             }
           }
@@ -640,15 +946,32 @@
     if (items.length === 0) return;
 
     const itemData = items.map(item => {
+      // The "See details" button input is authoritative: it carries the offer's
+      // ASIN, whether it's a variation parent, and the recommendation id the
+      // Vine API needs. The dp-link is the fallback for layout changes.
+      const detailsInput = item.querySelector('.vvp-details-btn input, input[data-recommendation-id]');
       const link = item.querySelector('a[href*="/dp/"]');
-      if (!link) return null;
-      const asin = extractASIN(link.href);
-      if (asin) {
-        // Store ASIN on item immediately for consistency
-        item.dataset.vineAsin = asin;
-        return { item, asin, url: link.href };
+      const inputAsin = detailsInput && detailsInput.dataset.asin;
+      const asin = (inputAsin && /^[A-Z0-9]{10}$/i.test(inputAsin))
+        ? inputAsin.toUpperCase()
+        : (link ? extractASIN(link.href) : null);
+      if (!asin) return null;
+      let origin = location.origin;
+      if (link) {
+        try { origin = new URL(link.href, location.href).origin; } catch (e) { /* keep location.origin */ }
       }
-      return null;
+      // Store ASIN on item immediately for consistency
+      item.dataset.vineAsin = asin;
+      if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
+        item.dataset.vineIsParent = 'true';
+      }
+      return {
+        item,
+        asin,
+        url: link ? link.href : `${origin}/dp/${asin}`,
+        isParent: !!(detailsInput && detailsInput.dataset.isParentAsin === 'true'),
+        recId: detailsInput ? (detailsInput.dataset.recommendationId || null) : null
+      };
     }).filter(data => data && data.asin);
 
     if (itemData.length === 0) return;
@@ -668,61 +991,95 @@
       getHideCached((shouldHide) => {
         const uncachedItems = [];
 
-        itemData.forEach(({ item, asin, url }) => {
+        itemData.forEach(({ item, asin, url, isParent, recId }) => {
           const cached = cachedResults[asin];
-          if (cached && cached.price !== undefined && cached.price !== null) {
+          // Entries cached before parent detection existed hold the parent
+          // page's default-child price (the wrong product) — refetch them.
+          const staleParentEntry = isParent && cached && !cached.isParent;
+          if (cached && !staleParentEntry && cached.price !== undefined && cached.price !== null) {
             item.dataset.vineIsCached = 'true';
             item.dataset.vinePrice = cached.price;
+            if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
+            if (cached.isEtv) item.dataset.vineIsEtv = 'true';
             // Default to true for legacy cache entries without isSeen property
             const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
             item.dataset.vineSeen = String(isSeen);
 
             const color = getPriceColorSync(cached.price);
-            const badge = createPriceBadge(cached.price, true, isSeen, color);
+            const badge = createPriceBadge(
+              { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
+              true, isSeen, color
+            );
+            attachExternalLinks(badge, asin, getTileTitle(item));
             item.appendChild(badge);
             applyColorFilter(item, color);
           } else {
-            uncachedItems.push({ item, asin, url });
+            uncachedItems.push({ item, asin, url, isParent, recId });
           }
         });
 
-        uncachedItems.forEach(({ item, asin, url }) => {
+        uncachedItems.forEach(({ item, asin, url, isParent, recId }) => {
           const fetchId = `${asin}-${Date.now()}`;
           activeFetches.set(asin, fetchId);
 
-          fetchPrice(url, asin, (priceData) => {
-            if (activeFetches.get(asin) === fetchId) {
-              activeFetches.delete(asin);
-              if (priceData) {
-                const color = getPriceColorSync(priceData.price);
+          const handleResult = (priceData) => {
+            if (activeFetches.get(asin) !== fetchId) return;
+            activeFetches.delete(asin);
+            if (priceData) {
+              const color = getPriceColorSync(priceData.price);
 
-                // Store price
-                item.dataset.vinePrice = priceData.price;
+              // Store price (lowest of a range) — filters/sort key off this
+              item.dataset.vinePrice = priceData.price;
+              if (priceData.priceMax != null) item.dataset.vinePriceMax = priceData.priceMax;
+              if (priceData.isEtv) item.dataset.vineIsEtv = 'true';
+              if (priceData.approx) item.dataset.vineApprox = 'true';
 
-                // Calculate visibility (isSeen) based on filters
-                getColorFilter((filter) => {
-                  const isVisible = filter[color];
+              // Calculate visibility (isSeen) based on filters
+              getColorFilter((filter) => {
+                const isVisible = filter[color];
 
-                  // Always cache, set seen status based on visibility
-                  setCachedPrice(asin, priceData.price, isVisible);
+                // Cache reliable prices; approx (wrong-variant) prices would poison it
+                if (!priceData.approx) {
+                  setCachedPrice(asin, priceData.price, isVisible, {
+                    priceMax: priceData.priceMax,
+                    isParent,
+                    isEtv: priceData.isEtv
+                  });
+                }
 
-                  // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly)
-                  item.dataset.vineSeen = 'false';
-                });
+                // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly)
+                item.dataset.vineSeen = 'false';
+              });
 
-                const badge = createPriceBadge(priceData.price, false, false, color);
-                item.appendChild(badge);
-                applyColorFilter(item, color);
-              } else if (isPreReleaseItem(item)) {
-                // If price fetch failed but it IS a pre-release item
-                applyColorFilter(item, 'gray');
-              }
+              const badge = createPriceBadge(priceData, false, false, color);
+              attachExternalLinks(badge, asin, getTileTitle(item));
+              item.appendChild(badge);
+              applyColorFilter(item, color);
+              scheduleSortRefresh();
+            } else if (isPreReleaseItem(item)) {
+              // If price fetch failed but it IS a pre-release item
+              applyColorFilter(item, 'gray');
             }
-          });
+          };
+
+          if (isParent && recId) {
+            fetchParentPrices(recId, url, handleResult);
+          } else {
+            fetchPrice(url, asin, (data) => {
+              if (data && data.unreliable) {
+                handleResult({ price: data.price, approx: true });
+              } else {
+                handleResult(data);
+              }
+            });
+          }
         });
 
         // Check if all items are hidden and auto-advance if enabled
         checkAndAutoAdvance();
+
+        // Cached items got their badges synchronously above
+        scheduleSortRefresh();
       });
     });
   }
@@ -740,6 +1097,9 @@
         return;
       }
       if (!autoAdvance) return;
+      // Infinite scroll subsumes auto-advance: with everything hidden the
+      // sentinel stays in view and the next page loads inline anyway.
+      if (getInfiniteScroll()) return;
 
       const allItems = findVineItems();
       if (allItems.length === 0) return;
@@ -767,6 +1127,176 @@
 
   function findPageLink(selectors) {
     return findFirstMatch(document, selectors);
+  }
+
+  // ---- Sort tiles by price ----
+  let sortOrder = null; // 'none' | 'asc' | 'desc'
+  let isReordering = false;
+  let sortRefreshTimeout = null;
+
+  function getSortOrder() {
+    if (sortOrder === null) sortOrder = getStorage(CONFIG.SORT_ORDER_KEY, 'none');
+    return sortOrder;
+  }
+
+  function sortVineTiles() {
+    const order = getSortOrder();
+    if (order !== 'asc' && order !== 'desc') return;
+    const items = findVineItems();
+    if (items.length < 2) return;
+    const parent = items[0].parentElement;
+    if (!parent) return;
+
+    const sorted = [...items].sort((a, b) => {
+      const pa = parseFloat(a.dataset.vinePrice);
+      const pb = parseFloat(b.dataset.vinePrice);
+      const va = isNaN(pa) ? Infinity : pa; // unpriced tiles sink to the end
+      const vb = isNaN(pb) ? Infinity : pb;
+      if (va === vb) return 0;
+      if (va === Infinity) return 1;
+      if (vb === Infinity) return -1;
+      return order === 'asc' ? va - vb : vb - va;
+    });
+
+    // appendChild moves nodes (badges/listeners survive); flag the reorder so
+    // the MutationObserver doesn't burn a debounce cycle on our own mutations.
+    isReordering = true;
+    sorted.forEach(item => parent.appendChild(item));
+    setTimeout(() => { isReordering = false; }, 0);
+  }
+
+  // Debounced re-sort: prices arrive async, so the page settles into order
+  // shortly after fetches complete instead of thrashing per item.
+  function scheduleSortRefresh() {
+    if (getSortOrder() === 'none') return;
+    if (sortRefreshTimeout) clearTimeout(sortRefreshTimeout);
+    sortRefreshTimeout = setTimeout(sortVineTiles, 500);
+  }
+
+  // ---- Infinite scroll ----
+  let infiniteScroll = false;
+  let infiniteScrollLoaded = false;
+  let infiniteScrollObserver = null;
+  let infiniteSentinel = null;
+  let nextPageHref = null;
+  let isLoadingNextPage = false;
+  let lastInfiniteLoadAt = 0;
+  let loadsSinceScroll = 0;
+  const INFINITE_LOAD_COOLDOWN = 1000;
+  const INFINITE_MAX_CHAIN = 5; // pages loaded without a user scroll (filters can hide everything)
+
+  function getInfiniteScroll() {
+    if (!infiniteScrollLoaded) {
+      infiniteScrollLoaded = true;
+      infiniteScroll = getStorage(CONFIG.INFINITE_SCROLL_KEY, false);
+    }
+    return infiniteScroll;
+  }
+
+  function setupInfiniteScroll() {
+    if (!getInfiniteScroll() || infiniteScrollObserver) return;
+    const items = findVineItems();
+    const grid = items.length
+      ? items[0].parentElement
+      : document.querySelector('.vvp-items-grid, #vvp-items-grid');
+    if (!grid) return;
+
+    const nextLink = findPageLink(CONFIG.NEXT_PAGE_SELECTORS);
+    nextPageHref = (nextLink && !nextLink.parentElement.classList.contains('a-disabled'))
+      ? nextLink.href
+      : null;
+    if (!nextPageHref) return;
+
+    infiniteSentinel = document.createElement('div');
+    infiniteSentinel.id = 'vine-infinite-sentinel';
+    grid.parentElement.insertBefore(infiniteSentinel, grid.nextSibling);
+
+    window.addEventListener('scroll', () => { loadsSinceScroll = 0; }, { passive: true });
+
+    infiniteScrollObserver = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) loadNextPageInline(grid);
+    }, { rootMargin: '800px' });
+    infiniteScrollObserver.observe(infiniteSentinel);
+  }
+
+  function teardownInfiniteScroll(endMessage) {
+    if (infiniteScrollObserver) {
+      infiniteScrollObserver.disconnect();
+      infiniteScrollObserver = null;
+    }
+    if (infiniteSentinel) {
+      if (endMessage) {
+        infiniteSentinel.textContent = endMessage;
+        infiniteSentinel.className = 'vine-infinite-end';
+      } else {
+        infiniteSentinel.remove();
+        infiniteSentinel = null;
+      }
+    }
+  }
+
+  async function loadNextPageInline(grid) {
+    if (isLoadingNextPage || !nextPageHref) return;
+    const now = Date.now();
+    if (now - lastInfiniteLoadAt < INFINITE_LOAD_COOLDOWN) return;
+    if (loadsSinceScroll >= INFINITE_MAX_CHAIN) return; // wait for a real scroll
+    isLoadingNextPage = true;
+    lastInfiniteLoadAt = now;
+    loadsSinceScroll++;
+    const fetchedUrl = nextPageHref;
+
+    try {
+      const res = await gmFetch({ url: fetchedUrl });
+      const doc = new DOMParser().parseFromString(res.responseText, 'text/html');
+
+      let newTiles = [];
+      for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
+        const found = doc.querySelectorAll(selector);
+        if (found.length > 0) { newTiles = Array.from(found); break; }
+      }
+
+      // Vine reshuffles items between pages — skip tiles already on the page.
+      const presentAsins = new Set(
+        Array.from(document.querySelectorAll('[data-vine-asin]')).map(el => el.dataset.vineAsin)
+      );
+      const appended = [];
+      newTiles.forEach(tile => {
+        const input = tile.querySelector('.vvp-details-btn input, input[data-recommendation-id]');
+        const link = tile.querySelector('a[href*="/dp/"]');
+        const inputAsin = input && input.dataset.asin;
+        const asin = (inputAsin && /^[A-Z0-9]{10}$/i.test(inputAsin))
+          ? inputAsin.toUpperCase()
+          : (link ? extractASIN(link.href) : null);
+        if (asin && presentAsins.has(asin)) return;
+        if (asin) presentAsins.add(asin);
+        appended.push(document.adoptNode(tile));
+      });
+      // The MutationObserver routes these through processBatch (they lack
+      // vinePriceProcessed). Scripts parsed by DOMParser are inert.
+      appended.forEach(tile => grid.appendChild(tile));
+
+      // Advance pagination state from the FETCHED document — the live DOM
+      // still points at the page we just consumed.
+      const fetchedNext = findFirstMatch(doc, CONFIG.NEXT_PAGE_SELECTORS);
+      const hasNext = fetchedNext && fetchedNext.parentElement
+        && !fetchedNext.parentElement.classList.contains('a-disabled')
+        && fetchedNext.getAttribute('href');
+      const livePagination = document.querySelector('.a-pagination');
+      const fetchedPagination = doc.querySelector('.a-pagination');
+      if (livePagination && fetchedPagination) {
+        // keeps ArrowLeft/ArrowRight keyboard nav coherent
+        livePagination.replaceWith(document.adoptNode(fetchedPagination));
+      }
+      try { history.replaceState(null, '', fetchedUrl); } catch (e) { /* ignore */ }
+      nextPageHref = hasNext ? new URL(fetchedNext.getAttribute('href'), fetchedUrl).href : null;
+      if (!nextPageHref) teardownInfiniteScroll('— End of results —');
+
+      scheduleSortRefresh();
+    } catch (err) {
+      console.error('[Vine] Infinite scroll load failed:', err);
+    } finally {
+      isLoadingNextPage = false;
+    }
   }
 
   function processVineItems(isInitialLoad = false) {
@@ -808,6 +1338,9 @@
     }
 
     mutationObserver = new MutationObserver((mutations) => {
+      // Our own sort reorders fire childList mutations — skip them
+      if (isReordering) return;
+
       // Filter mutations to only process relevant changes
       const hasRelevantChanges = mutations.some(mutation => {
         // Only process if nodes were added
@@ -992,6 +1525,23 @@
       checkboxWrapper.appendChild(labelText);
       filterContainer.appendChild(checkboxWrapper);
     });
+
+    // Sort-by-price toggle: Off → low-to-high → high-to-low
+    const sortBtn = document.createElement('button');
+    sortBtn.type = 'button';
+    sortBtn.id = 'vine-sort-btn';
+    const sortLabels = { none: 'Sort: Off', asc: 'Sort: $ ↑', desc: 'Sort: $ ↓' };
+    sortBtn.textContent = sortLabels[getSortOrder()] || sortLabels.none;
+    sortBtn.title = 'Sort items on this page by price';
+    sortBtn.addEventListener('click', () => {
+      const next = { none: 'asc', asc: 'desc', desc: 'none' }[getSortOrder()] || 'none';
+      sortOrder = next;
+      setStorage(CONFIG.SORT_ORDER_KEY, next);
+      sortBtn.textContent = sortLabels[next];
+      // 'none' leaves the current order; a reload restores Vine's natural order
+      if (next !== 'none') sortVineTiles();
+    });
+    filterContainer.appendChild(sortBtn);
 
     filterWrapper.appendChild(filterContainer);
 
@@ -1239,17 +1789,23 @@
   async function generateReview(productDescription, starRating, userComments, onRetry) {
     const providerKey = getStorage(CONFIG.AI_PROVIDER, 'openai');
     const provider = CONFIG.PROVIDERS[providerKey] || CONFIG.PROVIDERS.openai;
-    const apiKey = provider === CONFIG.PROVIDERS.deepseek
-      ? getStorage(CONFIG.DEEPSEEK_API_KEY, '')
-      : getStorage(CONFIG.OPENAI_API_KEY, '');
+    const isDeepseek = provider === CONFIG.PROVIDERS.deepseek;
+    const isClaude = provider === CONFIG.PROVIDERS.claude;
+    const apiKey = isClaude
+      ? getStorage(CONFIG.CLAUDE_API_KEY, '')
+      : isDeepseek
+        ? getStorage(CONFIG.DEEPSEEK_API_KEY, '')
+        : getStorage(CONFIG.OPENAI_API_KEY, '');
 
     if (!apiKey) {
       throw new Error(`${provider.label} API key not configured. Please add your key in Vine Tools > Price Settings.`);
     }
 
-    const model = provider === CONFIG.PROVIDERS.deepseek
-      ? (getStorage(CONFIG.DEEPSEEK_MODEL, '') || provider.defaultModel)
-      : provider.defaultModel;
+    const model = isClaude
+      ? (getStorage(CONFIG.CLAUDE_MODEL, '') || provider.defaultModel)
+      : isDeepseek
+        ? (getStorage(CONFIG.DEEPSEEK_MODEL, '') || provider.defaultModel)
+        : provider.defaultModel;
 
     const sentiment = starRating >= 4 ? 'positive' : starRating >= 3 ? 'neutral' : 'negative';
 
@@ -1302,24 +1858,46 @@ This should be a ${sentiment} review. Write naturally - like you're telling a fr
 
 Respond with a JSON object: {"title": "...", "body": "..."}`;
 
-    const requestOpts = {
-      method: 'POST',
-      url: provider.url,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      data: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 700,
-        response_format: { type: 'json_object' }
-      })
-    };
+    // Anthropic's Messages API differs from the OpenAI-compatible providers:
+    // auth via x-api-key + anthropic-version, system prompt is a top-level
+    // field, no response_format (the prompt's JSON contract + parse fallbacks
+    // cover that), and recent Claude models reject sampling params.
+    const requestOpts = isClaude
+      ? {
+        method: 'POST',
+        url: provider.url,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        data: JSON.stringify({
+          model,
+          max_tokens: 1024,
+          system: systemPrompt,
+          messages: [
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      }
+      : {
+        method: 'POST',
+        url: provider.url,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        data: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7,
+          max_tokens: 700,
+          response_format: { type: 'json_object' }
+        })
+      };
 
     // Retry transient 429 (rate_limit_exceeded) and 5xx with exponential backoff, honoring
     // Retry-After header when present. Don't retry insufficient_quota — that's a billing issue.
@@ -1330,6 +1908,16 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       try {
         const response = await gmFetch(requestOpts);
         const data = JSON.parse(response.responseText);
+        if (isClaude) {
+          if (data.stop_reason === 'refusal') {
+            throw new Error('Claude declined to generate this review. Try adjusting your comments.');
+          }
+          const textBlock = (data.content || []).find(b => b.type === 'text');
+          if (!textBlock || !textBlock.text) {
+            throw new Error('Claude returned no text content.');
+          }
+          return textBlock.text.trim();
+        }
         return data.choices[0].message.content.trim();
       } catch (error) {
         const info = parseOpenAIError(error);
@@ -1848,6 +2436,203 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     }
   }
 
+  // Sync Keyword Lists with GitHub Gist (last-write-wins by timestamp;
+  // equal timestamps union-merge both sides).
+  async function syncKeywordsWithGitHub(token) {
+    if (!token) throw new Error('No GitHub Token provided');
+
+    const gistFileName = 'vine_keyword_lists.json';
+    let gistId = getStorage(CONFIG.GIST_KEYWORDS_ID_KEY, null);
+    const gh = (endpoint, method, body) => githubRequest(token, endpoint, method, body);
+
+    try {
+      if (!gistId) {
+        const gists = await gh('gists');
+        const existingGist = gists.find(g => g.files && g.files[gistFileName]);
+        if (existingGist) {
+          gistId = existingGist.id;
+        } else {
+          const initialData = { timestamp: 0, highlight: [], block: [] };
+          const newGist = await gh('gists', 'POST', {
+            description: 'Amazon Vine Keyword Lists (Synced)',
+            public: false,
+            files: { [gistFileName]: { content: JSON.stringify(initialData) } }
+          });
+          gistId = newGist.id;
+        }
+        setStorage(CONFIG.GIST_KEYWORDS_ID_KEY, gistId);
+      }
+
+      const gistData = await gh(`gists/${gistId}`);
+      let remoteData = { timestamp: 0, highlight: [], block: [] };
+      if (gistData.files && gistData.files[gistFileName]) {
+        try {
+          const parsed = JSON.parse(gistData.files[gistFileName].content);
+          remoteData = {
+            timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : 0,
+            highlight: Array.isArray(parsed.highlight) ? parsed.highlight : [],
+            block: Array.isArray(parsed.block) ? parsed.block : []
+          };
+        } catch (e) {
+          console.error('Error parsing remote keyword lists:', e);
+        }
+      }
+
+      const localLists = getKeywordListsSync();
+      const localTimestamp = getStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, 0);
+
+      const applyRemote = (lists) => {
+        cachedKeywordLists = lists;
+        keywordListsRevision++;
+        setStorage(CONFIG.KEYWORD_LISTS_KEY, lists);
+        setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, remoteData.timestamp);
+        applyColorFilterToAllItems();
+      };
+
+      let finalLists;
+      if (localTimestamp > remoteData.timestamp) {
+        finalLists = localLists;
+        await gh(`gists/${gistId}`, 'PATCH', {
+          files: { [gistFileName]: { content: JSON.stringify({ timestamp: localTimestamp, ...localLists }) } }
+        });
+      } else if (remoteData.timestamp > localTimestamp) {
+        finalLists = { highlight: remoteData.highlight, block: remoteData.block };
+        applyRemote(finalLists);
+      } else {
+        const union = (a, b) => Array.from(new Set([...a, ...b]));
+        finalLists = {
+          highlight: union(localLists.highlight, remoteData.highlight),
+          block: union(localLists.block, remoteData.block)
+        };
+        const changedLocal = finalLists.highlight.length !== localLists.highlight.length
+          || finalLists.block.length !== localLists.block.length;
+        const changedRemote = finalLists.highlight.length !== remoteData.highlight.length
+          || finalLists.block.length !== remoteData.block.length;
+        if (changedLocal) applyRemote(finalLists);
+        if (changedRemote) {
+          await gh(`gists/${gistId}`, 'PATCH', {
+            files: { [gistFileName]: { content: JSON.stringify({ timestamp: localTimestamp || Date.now(), ...finalLists }) } }
+          });
+        }
+      }
+
+      return { success: true, count: finalLists.highlight.length + finalLists.block.length };
+
+    } catch (error) {
+      console.error('Keywords sync failed:', error);
+      throw error;
+    }
+  }
+
+
+  // Stats dashboard — recomputed on every tab open in one pass over the cache
+  // (which can hold tens of thousands of entries: counters only, no sorting).
+  function renderStatsTab(container) {
+    if (!container) return;
+    flushCacheUpdates(); // include debounced writes
+    getCache((cache) => {
+      const now = Date.now();
+      const DAY = 24 * 60 * 60 * 1000;
+      const startOfToday = new Date().setHours(0, 0, 0, 0);
+
+      let total = 0;
+      const ageBuckets = { '< 1 day': 0, '1–3 days': 0, '3–7 days': 0 };
+      let seenToday = 0;
+      let seenThisWeek = 0;
+      const priceBuckets = [
+        { label: '$0–10', min: 0, max: 10, count: 0 },
+        { label: '$10–25', min: 10, max: 25, count: 0 },
+        { label: '$25–50', min: 25, max: 50, count: 0 },
+        { label: '$50–100', min: 50, max: 100, count: 0 },
+        { label: '$100–200', min: 100, max: 200, count: 0 },
+        { label: '$200+', min: 200, max: Infinity, count: 0 }
+      ];
+
+      for (const asin in cache) {
+        const entry = cache[asin];
+        if (!entry || typeof entry.timestamp !== 'number') continue;
+        const age = now - entry.timestamp;
+        if (age > CONFIG.CACHE_DURATION) continue;
+        total++;
+        if (age < DAY) ageBuckets['< 1 day']++;
+        else if (age < 3 * DAY) ageBuckets['1–3 days']++;
+        else ageBuckets['3–7 days']++;
+        if (entry.isSeen !== false) {
+          if (entry.timestamp >= startOfToday) seenToday++;
+          if (age <= 7 * DAY) seenThisWeek++;
+        }
+        const price = typeof entry.price === 'number' ? entry.price : parseFloat(entry.price);
+        if (!isNaN(price)) {
+          const bucket = priceBuckets.find(b => price >= b.min && price < b.max);
+          if (bucket) bucket.count++;
+        }
+      }
+
+      const pageItems = document.querySelectorAll('[data-vine-price-processed="true"]');
+      let pageHidden = 0;
+      pageItems.forEach(item => { if (item.dataset.vineHidden === 'true') pageHidden++; });
+
+      container.replaceChildren();
+
+      const addHeading = (text) => {
+        const h = document.createElement('div');
+        h.style.cssText = 'font-weight: 600; color: var(--vine-fg); margin: 16px 0 8px;';
+        h.textContent = text;
+        container.appendChild(h);
+      };
+      const addLine = (label, value) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; color: var(--vine-fg-muted);';
+        const l = document.createElement('span');
+        l.textContent = label;
+        const v = document.createElement('span');
+        v.style.cssText = 'font-weight: 600; color: var(--vine-fg);';
+        v.textContent = value;
+        row.appendChild(l);
+        row.appendChild(v);
+        container.appendChild(row);
+      };
+
+      addHeading('📦 Price Cache');
+      addLine('Cached items', String(total));
+      Object.entries(ageBuckets).forEach(([label, count]) => addLine(`Age ${label}`, String(count)));
+      addLine('Seen today', String(seenToday));
+      addLine('Seen this week', String(seenThisWeek));
+
+      addHeading('💰 Price Distribution');
+      const maxCount = Math.max(1, ...priceBuckets.map(b => b.count));
+      priceBuckets.forEach(({ label, min, count }) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px;';
+        const l = document.createElement('span');
+        l.style.cssText = 'width: 70px; color: var(--vine-fg-muted); flex-shrink: 0;';
+        l.textContent = label;
+        const barWrap = document.createElement('div');
+        barWrap.style.cssText = 'flex: 1; background: var(--vine-surface); border-radius: 3px; height: 14px;';
+        const bar = document.createElement('div');
+        const color = getPriceColorSync(min + 0.01);
+        const barColor = color === 'green' ? '#046044' : color === 'yellow' ? '#FFD814' : '#B12704';
+        bar.style.cssText = `width: ${Math.round(count / maxCount * 100)}%; background: ${barColor}; height: 100%; border-radius: 3px; min-width: ${count > 0 ? 2 : 0}px;`;
+        barWrap.appendChild(bar);
+        const c = document.createElement('span');
+        c.style.cssText = 'width: 50px; text-align: right; color: var(--vine-fg); font-weight: 600;';
+        c.textContent = String(count);
+        row.appendChild(l);
+        row.appendChild(barWrap);
+        row.appendChild(c);
+        container.appendChild(row);
+      });
+
+      addHeading('📄 Current Page');
+      if (pageItems.length === 0) {
+        addLine('Items', 'n/a (not on an items page)');
+      } else {
+        addLine('Items processed', String(pageItems.length));
+        addLine('Visible', String(pageItems.length - pageHidden));
+        addLine('Hidden by filters', String(pageHidden));
+      }
+    });
+  }
 
   // Settings UI
   function createSettingsUI() {
@@ -1992,6 +2777,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
+      const aiProvider = getStorage(CONFIG.AI_PROVIDER, 'openai');
+      const externalLinks = getStorage(CONFIG.EXTERNAL_LINKS_KEY, true);
+      const infiniteScrollEnabled = getStorage(CONFIG.INFINITE_SCROLL_KEY, false);
 
       dialog.innerHTML = `
         <div class="vine-modal-header">
@@ -2001,6 +2789,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
         <div class="vine-tabs" role="tablist">
           <button type="button" id="tab-searches" class="vine-tab" role="tab">Saved Searches</button>
+          <button type="button" id="tab-keywords" class="vine-tab" role="tab">Keywords</button>
+          <button type="button" id="tab-stats" class="vine-tab" role="tab">Stats</button>
           <button type="button" id="tab-sync" class="vine-tab" role="tab">Cloud Sync</button>
           <button type="button" id="tab-price" class="vine-tab" role="tab">Price Settings</button>
           <button type="button" id="tab-shortcuts" class="vine-tab" role="tab">Shortcuts</button>
@@ -2048,16 +2838,39 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           </div>
         </div>
 
+        <div style="margin-bottom: 24px;">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="vine-infinite-scroll" ${infiniteScrollEnabled ? 'checked' : ''}
+              style="margin-right: 8px; width: 18px; height: 18px;">
+            <span style="font-weight: 600; color: var(--vine-fg);">Infinite scroll</span>
+          </label>
+          <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px; margin-left: 26px;">
+            Load the next page inline when you near the bottom (replaces auto-advance)
+          </div>
+        </div>
+
+        <div style="margin-bottom: 24px;">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="vine-external-links" ${externalLinks ? 'checked' : ''}
+              style="margin-right: 8px; width: 18px; height: 18px;">
+            <span style="font-weight: 600; color: var(--vine-fg);">Show price-check links on badges</span>
+          </label>
+          <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px; margin-left: 26px;">
+            K = Keepa, C = CamelCamelCamel, G = Google search (applies to newly loaded items)
+          </div>
+        </div>
+
         <div style="margin-bottom: 24px; padding-top: 24px; border-top: 1px solid var(--vine-border);">
           <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">AI Review Generator</label>
           <div style="margin-bottom: 12px;">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">AI Provider:</label>
             <select id="vine-ai-provider" style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; background: var(--vine-bg); color: var(--vine-fg);">
-              <option value="openai" ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'openai' ? 'selected' : ''}>OpenAI</option>
-              <option value="deepseek" ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+              <option value="openai" ${aiProvider === 'openai' ? 'selected' : ''}>OpenAI</option>
+              <option value="deepseek" ${aiProvider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+              <option value="claude" ${aiProvider === 'claude' ? 'selected' : ''}>Claude (Anthropic)</option>
             </select>
           </div>
-          <div id="vine-openai-section" style="margin-bottom: 12px; ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'deepseek' ? 'display: none;' : ''}">
+          <div id="vine-openai-section" style="margin-bottom: 12px; ${aiProvider !== 'openai' ? 'display: none;' : ''}">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">OpenAI API Key:</label>
             <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}"
               placeholder="sk-..."
@@ -2066,7 +2879,20 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
               Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
             </div>
           </div>
-          <div id="vine-deepseek-section" style="margin-bottom: 12px; ${getStorage(CONFIG.AI_PROVIDER, 'openai') === 'openai' ? 'display: none;' : ''}">
+          <div id="vine-claude-section" style="margin-bottom: 12px; ${aiProvider !== 'claude' ? 'display: none;' : ''}">
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Anthropic API Key:</label>
+            <input type="password" id="vine-claude-key" value="${getStorage(CONFIG.CLAUDE_API_KEY, '')}"
+              placeholder="sk-ant-..."
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; margin-bottom: 8px;">
+            <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Claude Model:</label>
+            <input type="text" id="vine-claude-model" value="${getStorage(CONFIG.CLAUDE_MODEL, '') || 'claude-opus-4-8'}"
+              placeholder="claude-opus-4-8"
+              style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
+              Get your key at <a href="https://platform.claude.com/" target="_blank" style="color: var(--vine-link);">platform.claude.com</a>
+            </div>
+          </div>
+          <div id="vine-deepseek-section" style="margin-bottom: 12px; ${aiProvider !== 'deepseek' ? 'display: none;' : ''}">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">DeepSeek API Key:</label>
             <input type="password" id="vine-deepseek-key" value="${getStorage(CONFIG.DEEPSEEK_API_KEY, '')}"
               placeholder="sk-..."
@@ -2108,6 +2934,33 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
               ${savedSearches.length === 0 ? '<div style="padding: 20px; text-align: center; color: var(--vine-fg-muted); background: var(--vine-surface); border-radius: 6px;">No saved searches yet. Add one above!</div>' : ''}
             </div>
           </div>
+        </div>
+
+        <div id="content-keywords" class="vine-tab-content" style="display: none;">
+          <div style="margin-bottom: 24px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: var(--vine-fg);">✨ Highlight Keywords</label>
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-bottom: 8px;">Items whose title contains one of these get an orange glow.</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <input type="text" id="vine-kw-highlight-input" placeholder="e.g. 'ssd', 'torque wrench'"
+                style="flex: 1; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+              <button type="button" id="vine-kw-highlight-add" class="vine-btn-primary" style="white-space: nowrap;">Add</button>
+            </div>
+            <div id="vine-kw-highlight-list" class="vine-kw-chips"></div>
+          </div>
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 4px; font-weight: 600; color: var(--vine-fg);">🚫 Block Keywords</label>
+            <div style="font-size: 12px; color: var(--vine-fg-muted); margin-bottom: 8px;">Items whose title contains one of these are hidden from the grid.</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <input type="text" id="vine-kw-block-input" placeholder="e.g. 'ring sizer', 'phone case'"
+                style="flex: 1; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+              <button type="button" id="vine-kw-block-add" class="vine-btn-primary" style="white-space: nowrap;">Add</button>
+            </div>
+            <div id="vine-kw-block-list" class="vine-kw-chips"></div>
+          </div>
+        </div>
+
+        <div id="content-stats" class="vine-tab-content" style="display: none;">
+          <div id="vine-stats-body"></div>
         </div>
 
         <div id="content-sync" class="vine-tab-content" style="display: none;">
@@ -2218,25 +3071,34 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const redMaxInput = dialog.querySelector('#vine-red-max');
 
       const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
+      const infiniteScrollCheckbox = dialog.querySelector('#vine-infinite-scroll');
+      const externalLinksCheckbox = dialog.querySelector('#vine-external-links');
       const openaiKeyInput = dialog.querySelector('#vine-openai-key');
+
+      // Auto-advance and infinite scroll are mutually exclusive
+      infiniteScrollCheckbox.addEventListener('change', () => {
+        if (infiniteScrollCheckbox.checked) autoAdvanceCheckbox.checked = false;
+      });
+      autoAdvanceCheckbox.addEventListener('change', () => {
+        if (autoAdvanceCheckbox.checked) infiniteScrollCheckbox.checked = false;
+      });
       const githubTokenInput = dialog.querySelector('#vine-github-token');
       const aiProviderSelect = dialog.querySelector('#vine-ai-provider');
       const deepseekKeyInput = dialog.querySelector('#vine-deepseek-key');
       const deepseekModelInput = dialog.querySelector('#vine-deepseek-model');
+      const claudeKeyInput = dialog.querySelector('#vine-claude-key');
+      const claudeModelInput = dialog.querySelector('#vine-claude-model');
       const openaiSection = dialog.querySelector('#vine-openai-section');
       const deepseekSection = dialog.querySelector('#vine-deepseek-section');
+      const claudeSection = dialog.querySelector('#vine-claude-section');
 
       const showStatus = makeShowStatus(statusDiv, 3000);
       closeBtn.addEventListener('click', closeSettingsModal);
 
       aiProviderSelect.addEventListener('change', () => {
-        if (aiProviderSelect.value === 'deepseek') {
-          openaiSection.style.display = 'none';
-          deepseekSection.style.display = '';
-        } else {
-          openaiSection.style.display = '';
-          deepseekSection.style.display = 'none';
-        }
+        openaiSection.style.display = aiProviderSelect.value === 'openai' ? '' : 'none';
+        deepseekSection.style.display = aiProviderSelect.value === 'deepseek' ? '' : 'none';
+        claudeSection.style.display = aiProviderSelect.value === 'claude' ? '' : 'none';
       });
 
       saveBtn.addEventListener('click', () => {
@@ -2267,11 +3129,23 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
         setStorage(CONFIG.THRESHOLDS_KEY, newThresholds);
         setStorage(CONFIG.AUTO_ADVANCE_KEY, autoAdvanceCheckbox.checked);
+        setStorage(CONFIG.EXTERNAL_LINKS_KEY, externalLinksCheckbox.checked);
+        externalLinksEnabled = externalLinksCheckbox.checked;
+        externalLinksLoaded = true;
+
+        const wasInfinite = getInfiniteScroll();
+        infiniteScroll = infiniteScrollCheckbox.checked;
+        infiniteScrollLoaded = true;
+        setStorage(CONFIG.INFINITE_SCROLL_KEY, infiniteScroll);
+        if (infiniteScroll && !wasInfinite) setupInfiniteScroll();
+        if (!infiniteScroll && wasInfinite) teardownInfiniteScroll();
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
         setStorage(CONFIG.GITHUB_TOKEN_KEY, githubTokenInput.value.trim());
         setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
         setStorage(CONFIG.DEEPSEEK_API_KEY, deepseekKeyInput.value.trim());
         setStorage(CONFIG.DEEPSEEK_MODEL, deepseekModelInput.value.trim());
+        setStorage(CONFIG.CLAUDE_API_KEY, claudeKeyInput.value.trim());
+        setStorage(CONFIG.CLAUDE_MODEL, claudeModelInput.value.trim());
 
         cachedThresholds = newThresholds;
         autoAdvance = autoAdvanceCheckbox.checked;
@@ -2282,8 +3156,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         allItems.forEach(item => {
           const badge = item.querySelector('.vine-price-badge');
           if (badge) {
-            const priceText = badge.querySelector('.vine-price-text').textContent;
-            const price = parseFloat(priceText.replace('$', ''));
+            // dataset holds the lowest price of a range — badge text may be "$a–$b"
+            const price = parseFloat(item.dataset.vinePrice);
             if (!isNaN(price)) {
               const color = getPriceColorSync(price);
               badge.className = `vine-price-badge vine-price-${color}`;
@@ -2306,17 +3180,23 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       // Tab switching
       const tabPrice = dialog.querySelector('#tab-price');
       const tabSearches = dialog.querySelector('#tab-searches');
+      const tabKeywords = dialog.querySelector('#tab-keywords');
+      const tabStats = dialog.querySelector('#tab-stats');
       const tabSync = dialog.querySelector('#tab-sync');
       const tabShortcuts = dialog.querySelector('#tab-shortcuts');
 
       const contentPrice = dialog.querySelector('#content-price');
       const contentSearches = dialog.querySelector('#content-searches');
+      const contentKeywords = dialog.querySelector('#content-keywords');
+      const contentStats = dialog.querySelector('#content-stats');
       const contentSync = dialog.querySelector('#content-sync');
       const contentShortcuts = dialog.querySelector('#content-shortcuts');
 
       const tabMap = {
         price: [tabPrice, contentPrice],
         searches: [tabSearches, contentSearches],
+        keywords: [tabKeywords, contentKeywords],
+        stats: [tabStats, contentStats],
         sync: [tabSync, contentSync],
         shortcuts: [tabShortcuts, contentShortcuts]
       };
@@ -2331,14 +3211,87 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         activeTab.classList.add('vine-tab-active');
         activeTab.setAttribute('aria-selected', 'true');
         activeContent.style.display = 'block';
+        if (tab === 'stats') renderStatsTab(dialog.querySelector('#vine-stats-body'));
       }
 
       tabPrice.addEventListener('click', () => { switchTab('price'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'price'); });
       tabSearches.addEventListener('click', () => { switchTab('searches'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'searches'); });
+      tabKeywords.addEventListener('click', () => { switchTab('keywords'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'keywords'); });
+      tabStats.addEventListener('click', () => { switchTab('stats'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'stats'); });
       tabSync.addEventListener('click', () => { switchTab('sync'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'sync'); });
       tabShortcuts.addEventListener('click', () => { switchTab('shortcuts'); setStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'shortcuts'); });
 
       switchTab(getStorage(CONFIG.LAST_ACTIVE_TAB_KEY, 'searches'));
+
+      // Keyword list management
+      function syncKeywordsInBackground() {
+        const token = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+        if (!token) return;
+        syncKeywordsWithGitHub(token).catch(err => console.error('Background keywords sync failed:', err));
+      }
+
+      function renderKeywordChips() {
+        ['highlight', 'block'].forEach(listName => {
+          const container = dialog.querySelector(`#vine-kw-${listName}-list`);
+          if (!container) return;
+          container.replaceChildren();
+          const lists = getKeywordListsSync();
+          if (lists[listName].length === 0) {
+            const empty = document.createElement('span');
+            empty.className = 'vine-kw-empty';
+            empty.textContent = 'No keywords yet.';
+            container.appendChild(empty);
+            return;
+          }
+          lists[listName].forEach(kw => {
+            const chip = document.createElement('span');
+            chip.className = 'vine-kw-chip';
+            const text = document.createElement('span');
+            text.textContent = kw;
+            chip.appendChild(text);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'vine-kw-chip-remove';
+            remove.textContent = '✕';
+            remove.setAttribute('aria-label', `Remove keyword "${kw}"`);
+            remove.addEventListener('click', () => {
+              const current = getKeywordListsSync();
+              setKeywordLists({
+                ...current,
+                [listName]: current[listName].filter(k => k !== kw)
+              });
+              renderKeywordChips();
+              applyColorFilterToAllItems();
+              syncKeywordsInBackground();
+            });
+            chip.appendChild(remove);
+            container.appendChild(chip);
+          });
+        });
+      }
+
+      function wireKeywordAdd(listName) {
+        const input = dialog.querySelector(`#vine-kw-${listName}-input`);
+        const addBtn = dialog.querySelector(`#vine-kw-${listName}-add`);
+        const add = () => {
+          const kw = input.value.trim().toLowerCase();
+          if (!kw) return;
+          const current = getKeywordListsSync();
+          if (!current[listName].includes(kw)) {
+            setKeywordLists({ ...current, [listName]: [...current[listName], kw] });
+          }
+          input.value = '';
+          renderKeywordChips();
+          applyColorFilterToAllItems();
+          syncKeywordsInBackground();
+        };
+        addBtn.addEventListener('click', add);
+        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+      }
+
+      wireKeywordAdd('highlight');
+      wireKeywordAdd('block');
+      renderKeywordChips();
 
       // Helper to sync searches in the background
       async function syncSearchesInBackground() {
@@ -2371,13 +3324,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.GITHUB_TOKEN_KEY, token);
 
         try {
-          // Sync both cache and searches
-          const [cacheResult, searchesResult] = await Promise.all([
+          // Sync cache, searches, and keyword lists
+          const [cacheResult, searchesResult, keywordsResult] = await Promise.all([
             syncWithGitHub(token),
-            syncSearchesWithGitHub(token)
+            syncSearchesWithGitHub(token),
+            syncKeywordsWithGitHub(token)
           ]);
 
-          showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches)`);
+          showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches, ${keywordsResult.count} keywords)`);
+          renderKeywordChips();
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
 
           // Refresh the searches list in case new ones were synced
@@ -2725,6 +3680,101 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       opacity: 0.9;
       cursor: help;
       animation: pulse 2s ease-in-out infinite;
+    }
+
+    .vine-variant-indicator {
+      font-size: 11px;
+      cursor: help;
+    }
+
+    /* External price-check links inside the badge */
+    .vine-ext-links {
+      display: inline-flex;
+      gap: 5px;
+      margin-left: 4px;
+      padding-left: 5px;
+      border-left: 1px solid rgba(255, 255, 255, 0.35);
+    }
+    .vine-price-yellow .vine-ext-links { border-left-color: rgba(15, 17, 17, 0.25); }
+    .vine-ext-link {
+      color: inherit !important;
+      font-size: 11px;
+      font-weight: 700;
+      text-decoration: none;
+      opacity: 0.85;
+    }
+    .vine-ext-link:hover {
+      opacity: 1;
+      text-decoration: underline;
+    }
+
+    /* Keyword highlight — outline, not border (border shifts grid layout) */
+    .vine-keyword-highlight {
+      outline: 3px solid #C7511F !important;
+      outline-offset: -3px;
+      box-shadow: 0 0 8px rgba(199, 81, 31, 0.5);
+    }
+
+    /* Keyword chips in the settings modal */
+    .vine-kw-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .vine-kw-empty {
+      font-size: 12px;
+      color: var(--vine-fg-muted);
+      padding: 4px 0;
+    }
+    .vine-kw-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--vine-surface);
+      border: 1px solid var(--vine-border);
+      border-radius: 14px;
+      padding: 4px 6px 4px 12px;
+      font-size: 13px;
+      color: var(--vine-fg);
+    }
+    .vine-kw-chip-remove {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--vine-fg-muted);
+      font-size: 12px;
+      padding: 2px 5px;
+      border-radius: 50%;
+    }
+    .vine-kw-chip-remove:hover {
+      background: var(--vine-secondary-hover);
+      color: var(--vine-danger);
+    }
+
+    /* Sort-by-price toggle in the filter bar */
+    #vine-sort-btn {
+      background: var(--vine-secondary);
+      color: var(--vine-fg);
+      border: 1px solid var(--vine-border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: "Amazon Ember", Arial, sans-serif;
+      white-space: nowrap;
+    }
+    #vine-sort-btn:hover { background: var(--vine-secondary-hover); }
+
+    /* Infinite scroll sentinel / end marker */
+    #vine-infinite-sentinel {
+      min-height: 1px;
+    }
+    .vine-infinite-end {
+      text-align: center;
+      color: var(--vine-fg-muted);
+      font-size: 13px;
+      padding: 16px 0;
     }
 
     @keyframes pulse {
@@ -3193,6 +4243,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           syncSearchesWithGitHub(githubToken)
             .then(result => console.log(`Vine Price Display: Searches auto-sync complete (${result.count} searches)`))
             .catch(err => console.error('Vine Price Display: Searches auto-sync failed', err));
+          syncKeywordsWithGitHub(githubToken)
+            .then(result => console.log(`Vine Price Display: Keywords auto-sync complete (${result.count} keywords)`))
+            .catch(err => console.error('Vine Price Display: Keywords auto-sync failed', err));
         }, 2000);
       }
 
@@ -3200,6 +4253,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       createSettingsUI();
       if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
         createColorFilterUI();
+        setupInfiniteScroll();
       }
     }
 
