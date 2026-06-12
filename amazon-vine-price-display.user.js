@@ -38,6 +38,8 @@
     KEYWORD_LISTS_KEY: 'vine_keyword_lists',
     KEYWORD_LISTS_TIMESTAMP_KEY: 'vine_keyword_lists_timestamp',
     EXTERNAL_LINKS_KEY: 'vine_external_links',
+    SORT_ORDER_KEY: 'vine_sort_order',
+    INFINITE_SCROLL_KEY: 'vine_infinite_scroll',
     COLOR_FILTER_KEY: 'vine_color_filter',
     OPENAI_API_KEY: 'vine_openai_api_key',
     DEEPSEEK_API_KEY: 'vine_deepseek_api_key',
@@ -1040,6 +1042,7 @@
               attachExternalLinks(badge, asin, getTileTitle(item));
               item.appendChild(badge);
               applyColorFilter(item, color);
+              scheduleSortRefresh();
             } else if (isPreReleaseItem(item)) {
               // If price fetch failed but it IS a pre-release item
               applyColorFilter(item, 'gray');
@@ -1061,6 +1064,9 @@
 
         // Check if all items are hidden and auto-advance if enabled
         checkAndAutoAdvance();
+
+        // Cached items got their badges synchronously above
+        scheduleSortRefresh();
       });
     });
   }
@@ -1078,6 +1084,9 @@
         return;
       }
       if (!autoAdvance) return;
+      // Infinite scroll subsumes auto-advance: with everything hidden the
+      // sentinel stays in view and the next page loads inline anyway.
+      if (getInfiniteScroll()) return;
 
       const allItems = findVineItems();
       if (allItems.length === 0) return;
@@ -1105,6 +1114,176 @@
 
   function findPageLink(selectors) {
     return findFirstMatch(document, selectors);
+  }
+
+  // ---- Sort tiles by price ----
+  let sortOrder = null; // 'none' | 'asc' | 'desc'
+  let isReordering = false;
+  let sortRefreshTimeout = null;
+
+  function getSortOrder() {
+    if (sortOrder === null) sortOrder = getStorage(CONFIG.SORT_ORDER_KEY, 'none');
+    return sortOrder;
+  }
+
+  function sortVineTiles() {
+    const order = getSortOrder();
+    if (order !== 'asc' && order !== 'desc') return;
+    const items = findVineItems();
+    if (items.length < 2) return;
+    const parent = items[0].parentElement;
+    if (!parent) return;
+
+    const sorted = [...items].sort((a, b) => {
+      const pa = parseFloat(a.dataset.vinePrice);
+      const pb = parseFloat(b.dataset.vinePrice);
+      const va = isNaN(pa) ? Infinity : pa; // unpriced tiles sink to the end
+      const vb = isNaN(pb) ? Infinity : pb;
+      if (va === vb) return 0;
+      if (va === Infinity) return 1;
+      if (vb === Infinity) return -1;
+      return order === 'asc' ? va - vb : vb - va;
+    });
+
+    // appendChild moves nodes (badges/listeners survive); flag the reorder so
+    // the MutationObserver doesn't burn a debounce cycle on our own mutations.
+    isReordering = true;
+    sorted.forEach(item => parent.appendChild(item));
+    setTimeout(() => { isReordering = false; }, 0);
+  }
+
+  // Debounced re-sort: prices arrive async, so the page settles into order
+  // shortly after fetches complete instead of thrashing per item.
+  function scheduleSortRefresh() {
+    if (getSortOrder() === 'none') return;
+    if (sortRefreshTimeout) clearTimeout(sortRefreshTimeout);
+    sortRefreshTimeout = setTimeout(sortVineTiles, 500);
+  }
+
+  // ---- Infinite scroll ----
+  let infiniteScroll = false;
+  let infiniteScrollLoaded = false;
+  let infiniteScrollObserver = null;
+  let infiniteSentinel = null;
+  let nextPageHref = null;
+  let isLoadingNextPage = false;
+  let lastInfiniteLoadAt = 0;
+  let loadsSinceScroll = 0;
+  const INFINITE_LOAD_COOLDOWN = 1000;
+  const INFINITE_MAX_CHAIN = 5; // pages loaded without a user scroll (filters can hide everything)
+
+  function getInfiniteScroll() {
+    if (!infiniteScrollLoaded) {
+      infiniteScrollLoaded = true;
+      infiniteScroll = getStorage(CONFIG.INFINITE_SCROLL_KEY, false);
+    }
+    return infiniteScroll;
+  }
+
+  function setupInfiniteScroll() {
+    if (!getInfiniteScroll() || infiniteScrollObserver) return;
+    const items = findVineItems();
+    const grid = items.length
+      ? items[0].parentElement
+      : document.querySelector('.vvp-items-grid, #vvp-items-grid');
+    if (!grid) return;
+
+    const nextLink = findPageLink(CONFIG.NEXT_PAGE_SELECTORS);
+    nextPageHref = (nextLink && !nextLink.parentElement.classList.contains('a-disabled'))
+      ? nextLink.href
+      : null;
+    if (!nextPageHref) return;
+
+    infiniteSentinel = document.createElement('div');
+    infiniteSentinel.id = 'vine-infinite-sentinel';
+    grid.parentElement.insertBefore(infiniteSentinel, grid.nextSibling);
+
+    window.addEventListener('scroll', () => { loadsSinceScroll = 0; }, { passive: true });
+
+    infiniteScrollObserver = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) loadNextPageInline(grid);
+    }, { rootMargin: '800px' });
+    infiniteScrollObserver.observe(infiniteSentinel);
+  }
+
+  function teardownInfiniteScroll(endMessage) {
+    if (infiniteScrollObserver) {
+      infiniteScrollObserver.disconnect();
+      infiniteScrollObserver = null;
+    }
+    if (infiniteSentinel) {
+      if (endMessage) {
+        infiniteSentinel.textContent = endMessage;
+        infiniteSentinel.className = 'vine-infinite-end';
+      } else {
+        infiniteSentinel.remove();
+        infiniteSentinel = null;
+      }
+    }
+  }
+
+  async function loadNextPageInline(grid) {
+    if (isLoadingNextPage || !nextPageHref) return;
+    const now = Date.now();
+    if (now - lastInfiniteLoadAt < INFINITE_LOAD_COOLDOWN) return;
+    if (loadsSinceScroll >= INFINITE_MAX_CHAIN) return; // wait for a real scroll
+    isLoadingNextPage = true;
+    lastInfiniteLoadAt = now;
+    loadsSinceScroll++;
+    const fetchedUrl = nextPageHref;
+
+    try {
+      const res = await gmFetch({ url: fetchedUrl });
+      const doc = new DOMParser().parseFromString(res.responseText, 'text/html');
+
+      let newTiles = [];
+      for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
+        const found = doc.querySelectorAll(selector);
+        if (found.length > 0) { newTiles = Array.from(found); break; }
+      }
+
+      // Vine reshuffles items between pages — skip tiles already on the page.
+      const presentAsins = new Set(
+        Array.from(document.querySelectorAll('[data-vine-asin]')).map(el => el.dataset.vineAsin)
+      );
+      const appended = [];
+      newTiles.forEach(tile => {
+        const input = tile.querySelector('.vvp-details-btn input, input[data-recommendation-id]');
+        const link = tile.querySelector('a[href*="/dp/"]');
+        const inputAsin = input && input.dataset.asin;
+        const asin = (inputAsin && /^[A-Z0-9]{10}$/i.test(inputAsin))
+          ? inputAsin.toUpperCase()
+          : (link ? extractASIN(link.href) : null);
+        if (asin && presentAsins.has(asin)) return;
+        if (asin) presentAsins.add(asin);
+        appended.push(document.adoptNode(tile));
+      });
+      // The MutationObserver routes these through processBatch (they lack
+      // vinePriceProcessed). Scripts parsed by DOMParser are inert.
+      appended.forEach(tile => grid.appendChild(tile));
+
+      // Advance pagination state from the FETCHED document — the live DOM
+      // still points at the page we just consumed.
+      const fetchedNext = findFirstMatch(doc, CONFIG.NEXT_PAGE_SELECTORS);
+      const hasNext = fetchedNext && fetchedNext.parentElement
+        && !fetchedNext.parentElement.classList.contains('a-disabled')
+        && fetchedNext.getAttribute('href');
+      const livePagination = document.querySelector('.a-pagination');
+      const fetchedPagination = doc.querySelector('.a-pagination');
+      if (livePagination && fetchedPagination) {
+        // keeps ArrowLeft/ArrowRight keyboard nav coherent
+        livePagination.replaceWith(document.adoptNode(fetchedPagination));
+      }
+      try { history.replaceState(null, '', fetchedUrl); } catch (e) { /* ignore */ }
+      nextPageHref = hasNext ? new URL(fetchedNext.getAttribute('href'), fetchedUrl).href : null;
+      if (!nextPageHref) teardownInfiniteScroll('— End of results —');
+
+      scheduleSortRefresh();
+    } catch (err) {
+      console.error('[Vine] Infinite scroll load failed:', err);
+    } finally {
+      isLoadingNextPage = false;
+    }
   }
 
   function processVineItems(isInitialLoad = false) {
@@ -1146,6 +1325,9 @@
     }
 
     mutationObserver = new MutationObserver((mutations) => {
+      // Our own sort reorders fire childList mutations — skip them
+      if (isReordering) return;
+
       // Filter mutations to only process relevant changes
       const hasRelevantChanges = mutations.some(mutation => {
         // Only process if nodes were added
@@ -1330,6 +1512,23 @@
       checkboxWrapper.appendChild(labelText);
       filterContainer.appendChild(checkboxWrapper);
     });
+
+    // Sort-by-price toggle: Off → low-to-high → high-to-low
+    const sortBtn = document.createElement('button');
+    sortBtn.type = 'button';
+    sortBtn.id = 'vine-sort-btn';
+    const sortLabels = { none: 'Sort: Off', asc: 'Sort: $ ↑', desc: 'Sort: $ ↓' };
+    sortBtn.textContent = sortLabels[getSortOrder()] || sortLabels.none;
+    sortBtn.title = 'Sort items on this page by price';
+    sortBtn.addEventListener('click', () => {
+      const next = { none: 'asc', asc: 'desc', desc: 'none' }[getSortOrder()] || 'none';
+      sortOrder = next;
+      setStorage(CONFIG.SORT_ORDER_KEY, next);
+      sortBtn.textContent = sortLabels[next];
+      // 'none' leaves the current order; a reload restores Vine's natural order
+      if (next !== 'none') sortVineTiles();
+    });
+    filterContainer.appendChild(sortBtn);
 
     filterWrapper.appendChild(filterContainer);
 
@@ -2567,6 +2766,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
       const aiProvider = getStorage(CONFIG.AI_PROVIDER, 'openai');
       const externalLinks = getStorage(CONFIG.EXTERNAL_LINKS_KEY, true);
+      const infiniteScrollEnabled = getStorage(CONFIG.INFINITE_SCROLL_KEY, false);
 
       dialog.innerHTML = `
         <div class="vine-modal-header">
@@ -2622,6 +2822,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           </label>
           <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px; margin-left: 26px;">
             Automatically go to the next page when all items on the current page are hidden
+          </div>
+        </div>
+
+        <div style="margin-bottom: 24px;">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="vine-infinite-scroll" ${infiniteScrollEnabled ? 'checked' : ''}
+              style="margin-right: 8px; width: 18px; height: 18px;">
+            <span style="font-weight: 600; color: var(--vine-fg);">Infinite scroll</span>
+          </label>
+          <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px; margin-left: 26px;">
+            Load the next page inline when you near the bottom (replaces auto-advance)
           </div>
         </div>
 
@@ -2847,8 +3058,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const redMaxInput = dialog.querySelector('#vine-red-max');
 
       const autoAdvanceCheckbox = dialog.querySelector('#vine-auto-advance');
+      const infiniteScrollCheckbox = dialog.querySelector('#vine-infinite-scroll');
       const externalLinksCheckbox = dialog.querySelector('#vine-external-links');
       const openaiKeyInput = dialog.querySelector('#vine-openai-key');
+
+      // Auto-advance and infinite scroll are mutually exclusive
+      infiniteScrollCheckbox.addEventListener('change', () => {
+        if (infiniteScrollCheckbox.checked) autoAdvanceCheckbox.checked = false;
+      });
+      autoAdvanceCheckbox.addEventListener('change', () => {
+        if (autoAdvanceCheckbox.checked) infiniteScrollCheckbox.checked = false;
+      });
       const githubTokenInput = dialog.querySelector('#vine-github-token');
       const aiProviderSelect = dialog.querySelector('#vine-ai-provider');
       const deepseekKeyInput = dialog.querySelector('#vine-deepseek-key');
@@ -2899,6 +3119,13 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.EXTERNAL_LINKS_KEY, externalLinksCheckbox.checked);
         externalLinksEnabled = externalLinksCheckbox.checked;
         externalLinksLoaded = true;
+
+        const wasInfinite = getInfiniteScroll();
+        infiniteScroll = infiniteScrollCheckbox.checked;
+        infiniteScrollLoaded = true;
+        setStorage(CONFIG.INFINITE_SCROLL_KEY, infiniteScroll);
+        if (infiniteScroll && !wasInfinite) setupInfiniteScroll();
+        if (!infiniteScroll && wasInfinite) teardownInfiniteScroll();
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
         setStorage(CONFIG.GITHUB_TOKEN_KEY, githubTokenInput.value.trim());
         setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
@@ -3511,6 +3738,32 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       color: var(--vine-danger);
     }
 
+    /* Sort-by-price toggle in the filter bar */
+    #vine-sort-btn {
+      background: var(--vine-secondary);
+      color: var(--vine-fg);
+      border: 1px solid var(--vine-border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: "Amazon Ember", Arial, sans-serif;
+      white-space: nowrap;
+    }
+    #vine-sort-btn:hover { background: var(--vine-secondary-hover); }
+
+    /* Infinite scroll sentinel / end marker */
+    #vine-infinite-sentinel {
+      min-height: 1px;
+    }
+    .vine-infinite-end {
+      text-align: center;
+      color: var(--vine-fg-muted);
+      font-size: 13px;
+      padding: 16px 0;
+    }
+
     @keyframes pulse {
       0%, 100% {
         opacity: 0.9;
@@ -3987,6 +4240,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       createSettingsUI();
       if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
         createColorFilterUI();
+        setupInfiniteScroll();
       }
     }
 
