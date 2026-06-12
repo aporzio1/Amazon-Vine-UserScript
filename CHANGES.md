@@ -1,5 +1,18 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.43.0 - Multi-Variant Price Fix, Keywords, Sort, Infinite Scroll & More
+
+- **Fix (major)**: Multi-variation listings no longer show the wrong price. A parent-ASIN tile (e.g. a $16.99 accessory merged into a $299.99 listing) used to display the default child's buybox price. The script now reads `data-is-parent-asin` / `data-recommendation-id` from the tile, asks the Vine recommendations API which variations are actually offered, and shows their exact ETV when the API reports it — or a price range probed from the offered children's pages otherwise. Ranges display as `$a–$b` with a 🔀 indicator and are color-coded by the lowest price.
+- **Fix**: Price extraction is now scoped to the buybox (`#corePriceDisplay…`, `#apex_desktop`, etc.), excludes strikethrough list prices, and drops the `.a-price-whole` selectors that silently truncated cents and matched carousel prices.
+- **Fix**: The fetched page's ASIN is verified against the requested one; mismatches (Amazon substituting a different variant) render as `~$x` and are never cached. Parent entries cached before this release are treated as stale and refetched, so previously poisoned prices self-heal.
+- **Fix**: Pages that load fine but have no price (pre-release items) are no longer retried 3 extra times.
+- **Feature**: Keyword lists (new "Keywords" tab) — highlight keywords outline matching tiles in orange; block keywords hide them. Synced to a private Gist like saved searches.
+- **Feature**: Sort by price — a filter-bar button cycles Off / $↑ / $↓ and keeps the page sorted as prices arrive.
+- **Feature**: Infinite scroll (opt-in, Price Settings) — loads the next page inline near the bottom, deduped by ASIN. Mutually exclusive with auto-advance.
+- **Feature**: Stats tab — cache size and age, items seen today/this week, a price histogram colored by your thresholds, and visible/hidden counts for the current page.
+- **Feature**: Price-check links on each badge — **K**eepa (marketplace-aware), **C**amelCamelCamel, and **G**oogle search of the product title. Toggleable in Price Settings.
+- **Feature**: Claude (Anthropic) is a third AI review provider alongside OpenAI and DeepSeek, with a configurable model (default `claude-opus-4-8`).
+
 ## Version 1.42.2 - Remove Purple Filter
 
 - **UX**: Removed the purple ($0) filter — the checkbox, its hotkey (3), the badge style, and the $0 → purple color mapping. $0-ETV items now fall through to red like any other sub-threshold item.

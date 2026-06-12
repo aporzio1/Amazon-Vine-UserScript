@@ -41,7 +41,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **AI Review Generator**: Generate high-quality Amazon Vine reviews using AI
   - **Works on ALL Amazon product pages** (not just Vine items)
   - **Also works on review creation pages** - generate reviews directly while writing
-  - Powered by OpenAI (GPT-3.5-turbo) or DeepSeek — selectable in Settings
+  - Powered by OpenAI, DeepSeek, or Claude (Anthropic) — selectable in Settings
   - Follows Vine Voice guidelines (unbiased, honest, insightful)
   - Customizable with star rating and your own comments
   - One-click copy to clipboard
@@ -55,6 +55,12 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **Settings UI**: Access settings from the "Vine Tools" link in the header navigation
 - **Hide Cached Items**: Toggle to hide items you've already viewed
 - **Auto-Advance Pages**: Automatically skip to the next page when all items are hidden (requires "Hide Cached Items" to be enabled)
+- **Multi-Variant Listings**: Parent-ASIN tiles resolve the variations Vine actually offers (via the Vine API), showing their ETV or a price range instead of the default child's buybox price
+- **Keyword Lists**: Highlight items matching your interest keywords; hide items matching block keywords (Gist-synced)
+- **Sort by Price**: Reorder the items grid low-to-high or high-to-low from the filter bar
+- **Infinite Scroll**: Optionally load the next page inline as you near the bottom
+- **Stats Dashboard**: Cache size/age, items seen, and a price histogram in Vine Tools
+- **Price-Check Links**: Keepa / CamelCamelCamel / Google links on every price badge
 - **Auto-updates**: Automatically processes new items as you scroll
 
 ## Usage
@@ -64,7 +70,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 3. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
 4. **Saved Searches**: Use the "Saved Searches" tab to add, rename (click ✏️), delete (click 🗑️ twice), and reorder (drag the ⋮⋮ handle) your favorite search terms
 5. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
-6. **AI Provider**: Select OpenAI or DeepSeek in "Price Settings" and add the corresponding API key to enable AI review generation
+6. **AI Provider**: Select OpenAI, DeepSeek, or Claude in "Price Settings" and add the corresponding API key to enable AI review generation
 7. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
 8. **Auto-Advance Pages**: Enable this option to automatically advance to the next page when all items on the current page are hidden (only works when "Hide Cached Items" is enabled)
 9. **Cloud Sync**: Sync your cache and saved searches across devices using the "Cloud Sync" tab (requires GitHub Token)
