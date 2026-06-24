@@ -187,7 +187,7 @@
         method,
         url,
         headers,
-        data,
+        ...(data != null ? { data } : {}),
         onload: (response) => {
           if (response.status >= 200 && response.status < 300) {
             resolve(response);
