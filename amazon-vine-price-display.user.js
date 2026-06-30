@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.43.0
+// @version      1.44.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -542,33 +542,81 @@
       return;
     }
 
-    const retry = () => {
-      if (retries > 0) {
-        const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
-        setTimeout(() => fetchPrice(url, asin, callback, retries - 1), delay);
-      } else {
-        callback(null);
-      }
-    };
-
-    GM_xmlhttpRequest({
-      method: 'GET',
-      url,
-      onload: (response) => {
-        if (response.status !== 200) return retry();
-        const { price, pageAsin } = extractPriceFromHTML(response.responseText);
-        // Page loaded fine but carries no price (pre-release / unavailable):
-        // retrying would just re-download the same page.
-        if (price === null) return callback(null);
-        // Amazon substituted a different variant (typically a parent's default
-        // child) — its price is not this ASIN's price.
-        if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
-          return callback({ price, isCached: false, unreliable: true });
+    productFetchQueue.push((done) => {
+      const retry = (extraDelayMs = 0) => {
+        done();
+        if (retries > 0) {
+          const base = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
+          const jitter = Math.random() * 500;
+          const delay = Math.max(base + jitter, extraDelayMs);
+          setTimeout(() => fetchPrice(url, asin, callback, retries - 1), delay);
+        } else {
+          callback(null);
         }
-        callback({ price, isCached: false });
-      },
-      onerror: retry
+      };
+
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        onload: (response) => {
+          if (response.status === 503) {
+            // Amazon is rate-limiting — back off globally then retry with a long delay.
+            const retryAfterMs = parseRetryAfterMs(response.responseHeaders) || 30000;
+            productFetch503BackoffUntil = Math.max(productFetch503BackoffUntil, Date.now() + retryAfterMs);
+            console.warn(`[Vine] 503 from Amazon — pausing product fetches for ${Math.round(retryAfterMs / 1000)}s`);
+            retry(retryAfterMs);
+            return;
+          }
+          if (response.status !== 200) {
+            retry();
+            return;
+          }
+          done();
+          const { price, pageAsin } = extractPriceFromHTML(response.responseText);
+          // Page loaded fine but carries no price (pre-release / unavailable):
+          // retrying would just re-download the same page.
+          if (price === null) return callback(null);
+          // Amazon substituted a different variant (typically a parent's default
+          // child) — its price is not this ASIN's price.
+          if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
+            return callback({ price, isCached: false, unreliable: true });
+          }
+          callback({ price, isCached: false });
+        },
+        onerror: () => retry()
+      });
     });
+    pumpProductFetchQueue();
+  }
+
+  // ---- Product-page fetch queue (rate-limit guard) ----
+  // Amazon responds with 503 when too many product pages are fetched concurrently.
+  // All fetchPrice calls go through this queue so at most PRODUCT_FETCH_MAX_CONCURRENT
+  // requests are in-flight at once.
+  const productFetchQueue = [];
+  let productFetchActive = 0;
+  const PRODUCT_FETCH_MAX_CONCURRENT = 3;
+
+  // Milliseconds to pause ALL new product fetches after a 503 is received.
+  // Set to 0 when clear.  Shared across all callers so one 503 backs off the whole queue.
+  let productFetch503BackoffUntil = 0;
+
+  function pumpProductFetchQueue() {
+    const now = Date.now();
+    if (now < productFetch503BackoffUntil) {
+      // Still in 503 backoff — reschedule a pump for when it expires.
+      const remaining = productFetch503BackoffUntil - now;
+      setTimeout(pumpProductFetchQueue, remaining + 100);
+      return;
+    }
+    while (productFetchActive < PRODUCT_FETCH_MAX_CONCURRENT && productFetchQueue.length > 0) {
+      const task = productFetchQueue.shift();
+      productFetchActive++;
+      task(() => {
+        productFetchActive--;
+        pumpProductFetchQueue();
+      });
+    }
   }
 
   // ---- Vine recommendations API (parent-ASIN listings) ----
@@ -1293,7 +1341,13 @@
 
       scheduleSortRefresh();
     } catch (err) {
-      console.error('[Vine] Infinite scroll load failed:', err);
+      if (err && err.status === 503) {
+        const retryAfterMs = parseRetryAfterMs(err.responseHeaders) || 30000;
+        console.warn(`[Vine] Infinite scroll got 503 — retrying in ${Math.round(retryAfterMs / 1000)}s`);
+        setTimeout(() => loadNextPageInline(grid), retryAfterMs);
+      } else {
+        console.error('[Vine] Infinite scroll load failed:', err);
+      }
     } finally {
       isLoadingNextPage = false;
     }
