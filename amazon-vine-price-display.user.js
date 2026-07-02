@@ -56,6 +56,8 @@
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // 12 hours — "no price" results
     SYNC_MIN_INTERVAL: 30 * 60 * 1000, // 30 min — min gap between auto-syncs
+    CACHE_FLUSH_DEBOUNCE: 5000, // coalesce cache writes for 5s of idle...
+    CACHE_FLUSH_MAX_WAIT: 15000, // ...but never delay a pending write past 15s
     MAX_CACHE_SIZE: 50000,
     MAX_RETRIES: 3,
     RETRY_BASE_DELAY: 1000,
@@ -277,6 +279,7 @@
   // Cache optimization
   const pendingCacheUpdates = new Map();
   let cacheUpdateTimeout = null;
+  let firstPendingAt = 0; // when the oldest un-flushed update was queued
   let autoAdvanceCheckTimeout = null;
   let memoryCache = null; // In-memory cache to avoid repeated storage reads
   let cacheLoaded = false;
@@ -392,7 +395,11 @@
       lastCleanupTime = now;
     }
 
-    const limited = enforceCacheSizeLimit(toSave);
+    // Skip the Object.entries()/sort machinery unless we're actually over the
+    // cap — the common case is far under it.
+    const limited = Object.keys(toSave).length > CONFIG.MAX_CACHE_SIZE
+      ? enforceCacheSizeLimit(toSave)
+      : toSave;
     memoryCache = limited; // Update in-memory cache
     setStorage(CONFIG.CACHE_KEY, limited);
     if (callback) callback();
@@ -455,13 +462,21 @@
   }
 
   function flushCacheUpdates() {
+    if (cacheUpdateTimeout) { clearTimeout(cacheUpdateTimeout); cacheUpdateTimeout = null; }
+    firstPendingAt = 0;
     if (pendingCacheUpdates.size === 0) return;
 
-    getCache((cache) => {
-      pendingCacheUpdates.forEach((value, key) => { cache[key] = value; });
-      pendingCacheUpdates.clear();
-      setCache(cache);
-    });
+    // Re-read the latest blob from storage and fold pending updates into THAT,
+    // so a concurrent tab's newly cached prices aren't clobbered. Fall back to
+    // the in-memory copy only if storage is missing/unreadable — never wipe the
+    // cache on a transient read failure.
+    const stored = getStorage(CONFIG.CACHE_KEY, null);
+    const base = (stored && typeof stored === 'object' && !Array.isArray(stored))
+      ? stored
+      : (memoryCache && typeof memoryCache === 'object' && !Array.isArray(memoryCache) ? memoryCache : {});
+    pendingCacheUpdates.forEach((value, key) => { base[key] = value; });
+    pendingCacheUpdates.clear();
+    setCache(base);
   }
 
   function setCachedPrice(asin, price, isSeen = true, extra = null) {
@@ -479,11 +494,19 @@
     // Add to pending updates
     pendingCacheUpdates.set(asin, entry);
 
-    // Debounce the save operation (2 seconds)
+    // Debounce the save, but force a flush once the oldest pending update has
+    // waited CACHE_FLUSH_MAX_WAIT so a steady price stream can't defer it forever.
+    const now = Date.now();
+    if (!firstPendingAt) firstPendingAt = now;
     if (cacheUpdateTimeout) {
       clearTimeout(cacheUpdateTimeout);
+      cacheUpdateTimeout = null;
     }
-    cacheUpdateTimeout = setTimeout(flushCacheUpdates, 2000);
+    if (now - firstPendingAt >= CONFIG.CACHE_FLUSH_MAX_WAIT) {
+      flushCacheUpdates();
+    } else {
+      cacheUpdateTimeout = setTimeout(flushCacheUpdates, CONFIG.CACHE_FLUSH_DEBOUNCE);
+    }
   }
 
   // Price extraction
@@ -3690,6 +3713,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.CACHE_KEY, {});
         memoryCache = {};
         pendingCacheUpdates.clear();
+        if (cacheUpdateTimeout) { clearTimeout(cacheUpdateTimeout); cacheUpdateTimeout = null; }
+        firstPendingAt = 0;
         clearCacheBtn.textContent = clearOriginalText;
         clearCacheBtn.classList.remove('armed');
         clearArmed = false;
