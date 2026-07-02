@@ -55,6 +55,7 @@
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // 12 hours — "no price" results
+    SYNC_MIN_INTERVAL: 30 * 60 * 1000, // 30 min — min gap between auto-syncs
     MAX_CACHE_SIZE: 50000,
     MAX_RETRIES: 3,
     RETRY_BASE_DELAY: 1000,
@@ -4371,9 +4372,18 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       processVineItems(true);
 
       // Auto-sync if a GitHub token is configured. Cache-expiry cleanup is deferred in getCache.
+      // Throttled to at most once per SYNC_MIN_INTERVAL across page loads/tabs
+      // so navigating Vine doesn't re-transfer the whole cache blob every time.
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
-      if (githubToken) {
+      const syncFreshEnough = () =>
+        (Date.now() - (getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0)) < CONFIG.SYNC_MIN_INTERVAL;
+      if (githubToken && !syncFreshEnough()) {
+        // Jitter so multiple open tabs don't all sync at once.
         setTimeout(() => {
+          if (syncFreshEnough()) {
+            console.log('Vine Price Display: Auto-sync skipped (recently synced)');
+            return;
+          }
           console.log('Vine Price Display: Starting auto-sync...');
           syncWithGitHub(githubToken)
             .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} cached items)`))
@@ -4384,7 +4394,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           syncKeywordsWithGitHub(githubToken)
             .then(result => console.log(`Vine Price Display: Keywords auto-sync complete (${result.count} keywords)`))
             .catch(err => console.error('Vine Price Display: Keywords auto-sync failed', err));
-        }, 2000);
+        }, 2000 + Math.random() * 3000);
       }
 
       observePageChanges();
