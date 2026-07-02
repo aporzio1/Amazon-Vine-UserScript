@@ -536,87 +536,151 @@
     return { price: extractPriceFromDoc(doc), pageAsin: extractPageAsin(html, doc) };
   }
 
-  function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES) {
+  // ---- Amazon throttle circuit breaker ----
+  // When Amazon signals throttling (429/503 or a robot-check interstitial),
+  // pause every Amazon-bound queue for a cooldown instead of retrying into it.
+  const THROTTLE_BASE_COOLDOWN_MS = 60000;
+  const THROTTLE_MAX_COOLDOWN_MS = 900000;
+  const THROTTLE_REQUEUE_LIMIT = 2;
+  let throttledUntil = 0;
+  let throttleStrikes = 0;
+
+  function isThrottled() {
+    return Date.now() < throttledUntil;
+  }
+
+  function noteFetchSuccess() {
+    throttleStrikes = 0;
+  }
+
+  function tripThrottle(retryAfterMs, source) {
+    const cooldown = retryAfterMs
+      ? Math.min(retryAfterMs, THROTTLE_MAX_COOLDOWN_MS)
+      : Math.min(THROTTLE_BASE_COOLDOWN_MS * Math.pow(2, throttleStrikes), THROTTLE_MAX_COOLDOWN_MS);
+    throttledUntil = Math.max(throttledUntil, Date.now() + cooldown);
+    throttleStrikes++;
+    console.warn(`[Vine] Amazon throttling detected (${source}) — pausing fetches for ${Math.round(cooldown / 1000)}s`);
+    showThrottleIndicator(throttledUntil);
+    setTimeout(() => {
+      if (isThrottled()) return; // a later trip extended the cooldown; its timer resumes
+      removeThrottleIndicator();
+      pumpDpQueue();
+      pumpVineApiQueue();
+    }, cooldown + 50);
+  }
+
+  function showThrottleIndicator(until) {
+    let el = document.getElementById('vine-throttle-indicator');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'vine-throttle-indicator';
+      el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:99999;background:#b12704;color:#fff;padding:8px 12px;border-radius:6px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.3);';
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = `Vine price fetches paused — Amazon throttling (resumes in ~${Math.max(1, Math.round((until - Date.now()) / 1000))}s)`;
+  }
+
+  function removeThrottleIndicator() {
+    const el = document.getElementById('vine-throttle-indicator');
+    if (el) el.remove();
+  }
+
+  // Robot-check/captcha interstitials are small pages (real product pages run
+  // to ~1MB), often served with HTTP 200 — sniff before parsing for a price.
+  function looksLikeRobotCheck(html) {
+    if (!html || html.length > 100000) return false;
+    return html.includes('/errors/validateCaptcha') ||
+      html.includes('api-services-support@amazon.com') ||
+      html.includes('Type the characters you see in this image') ||
+      /<title>[^<]*(Robot Check|Bot Check|CAPTCHA)/i.test(html);
+  }
+
+  // ---- /dp/ product-page fetch queue ----
+  // Product pages used to be fetched one-per-tile in parallel (30+ at once on
+  // a fresh grid), which is what trips Amazon's rate limiting. Cap concurrency
+  // and space completions out with jitter.
+  const dpQueue = [];
+  let dpActive = 0;
+  const DP_MAX_CONCURRENT = 3;
+  const DP_DELAY_MIN_MS = 100;
+  const DP_DELAY_MAX_MS = 300;
+
+  function pumpDpQueue() {
+    if (isThrottled()) return; // tripThrottle re-pumps after the cooldown
+    while (dpActive < DP_MAX_CONCURRENT && dpQueue.length > 0) {
+      const task = dpQueue.shift();
+      dpActive++;
+      task(() => {
+        dpActive--;
+        setTimeout(pumpDpQueue, DP_DELAY_MIN_MS + Math.random() * (DP_DELAY_MAX_MS - DP_DELAY_MIN_MS));
+      });
+    }
+  }
+
+  function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES, requeues = 0) {
     if (!isValidAmazonURL(url)) {
       callback(null);
       return;
     }
-
-    productFetchQueue.push((done) => {
-      const retry = (extraDelayMs = 0) => {
-        done();
-        if (retries > 0) {
-          const base = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
-          const jitter = Math.random() * 500;
-          const delay = Math.max(base + jitter, extraDelayMs);
-          setTimeout(() => fetchPrice(url, asin, callback, retries - 1), delay);
-        } else {
-          callback(null);
-        }
-      };
-
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url,
-        onload: (response) => {
-          if (response.status === 503) {
-            // Amazon is rate-limiting — back off globally then retry with a long delay.
-            const retryAfterMs = parseRetryAfterMs(response.responseHeaders) || 30000;
-            productFetch503BackoffUntil = Math.max(productFetch503BackoffUntil, Date.now() + retryAfterMs);
-            console.warn(`[Vine] 503 from Amazon — pausing product fetches for ${Math.round(retryAfterMs / 1000)}s`);
-            retry(retryAfterMs);
-            return;
-          }
-          if (response.status !== 200) {
-            retry();
-            return;
-          }
-          done();
-          const { price, pageAsin } = extractPriceFromHTML(response.responseText);
-          // Page loaded fine but carries no price (pre-release / unavailable):
-          // retrying would just re-download the same page.
-          if (price === null) return callback(null);
-          // Amazon substituted a different variant (typically a parent's default
-          // child) — its price is not this ASIN's price.
-          if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
-            return callback({ price, isCached: false, unreliable: true });
-          }
-          callback({ price, isCached: false });
-        },
-        onerror: () => retry()
-      });
-    });
-    pumpProductFetchQueue();
+    dpQueue.push((done) => fetchPriceNow(url, asin, callback, retries, requeues, done));
+    pumpDpQueue();
   }
 
-  // ---- Product-page fetch queue (rate-limit guard) ----
-  // Amazon responds with 503 when too many product pages are fetched concurrently.
-  // All fetchPrice calls go through this queue so at most PRODUCT_FETCH_MAX_CONCURRENT
-  // requests are in-flight at once.
-  const productFetchQueue = [];
-  let productFetchActive = 0;
-  const PRODUCT_FETCH_MAX_CONCURRENT = 3;
+  function fetchPriceNow(url, asin, callback, retries, requeues, done) {
+    // Transient failure: free the slot, back off, rejoin the queue tail.
+    const retry = () => {
+      done();
+      if (retries > 0) {
+        const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
+        setTimeout(() => fetchPrice(url, asin, callback, retries - 1, requeues), delay);
+      } else {
+        callback(null);
+      }
+    };
 
-  // Milliseconds to pause ALL new product fetches after a 503 is received.
-  // Set to 0 when clear.  Shared across all callers so one 503 backs off the whole queue.
-  let productFetch503BackoffUntil = 0;
+    // Amazon is throttling: re-enqueue (bounded) so the item retries after the
+    // cooldown without counting as a failed fetch.
+    const requeue = () => {
+      done();
+      if (requeues >= THROTTLE_REQUEUE_LIMIT) {
+        callback(null);
+      } else {
+        fetchPrice(url, asin, callback, retries, requeues + 1);
+      }
+    };
 
-  function pumpProductFetchQueue() {
-    const now = Date.now();
-    if (now < productFetch503BackoffUntil) {
-      // Still in 503 backoff — reschedule a pump for when it expires.
-      const remaining = productFetch503BackoffUntil - now;
-      setTimeout(pumpProductFetchQueue, remaining + 100);
-      return;
-    }
-    while (productFetchActive < PRODUCT_FETCH_MAX_CONCURRENT && productFetchQueue.length > 0) {
-      const task = productFetchQueue.shift();
-      productFetchActive++;
-      task(() => {
-        productFetchActive--;
-        pumpProductFetchQueue();
-      });
-    }
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      onload: (response) => {
+        if (response.status === 404 || response.status === 410) {
+          done();
+          return callback(null); // gone for good — retrying can't help
+        }
+        if (response.status === 429 || response.status === 503) {
+          tripThrottle(parseRetryAfterMs(response.responseHeaders), `HTTP ${response.status}`);
+          return requeue();
+        }
+        if (response.status !== 200) return retry();
+        if (looksLikeRobotCheck(response.responseText)) {
+          tripThrottle(null, 'robot check');
+          return requeue();
+        }
+        noteFetchSuccess();
+        done();
+        const { price, pageAsin } = extractPriceFromHTML(response.responseText);
+        // Page loaded fine but carries no price (pre-release / unavailable):
+        // retrying would just re-download the same page.
+        if (price === null) return callback(null);
+        // Amazon substituted a different variant (typically a parent's default
+        // child) — its price is not this ASIN's price.
+        if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
+          return callback({ price, isCached: false, unreliable: true });
+        }
+        callback({ price, isCached: false });
+      },
+      onerror: retry
+    });
   }
 
   // ---- Vine recommendations API (parent-ASIN listings) ----
@@ -631,6 +695,7 @@
   const VINE_API_MAX_CONCURRENT = 2;
 
   function pumpVineApiQueue() {
+    if (isThrottled()) return; // tripThrottle re-pumps after the cooldown
     while (vineApiActive < VINE_API_MAX_CONCURRENT && vineApiQueue.length > 0) {
       const task = vineApiQueue.shift();
       vineApiActive++;
@@ -652,8 +717,11 @@
           callback(json && json.result ? json.result : null);
         })
         .catch(err => {
-          // On 429, hold the slot until Retry-After elapses so we don't hammer the API.
           const retryAfter = parseRetryAfterMs(err.responseHeaders);
+          if (err.status === 429 || err.status === 503) {
+            tripThrottle(retryAfter, `vine API HTTP ${err.status}`);
+          }
+          // On 429, hold the slot until Retry-After elapses so we don't hammer the API.
           setTimeout(done, err.status === 429 ? (retryAfter || 5000) : 0);
           callback(null);
         });
@@ -1284,7 +1352,7 @@
   }
 
   async function loadNextPageInline(grid) {
-    if (isLoadingNextPage || !nextPageHref) return;
+    if (isLoadingNextPage || !nextPageHref || isThrottled()) return;
     const now = Date.now();
     if (now - lastInfiniteLoadAt < INFINITE_LOAD_COOLDOWN) return;
     if (loadsSinceScroll >= INFINITE_MAX_CHAIN) return; // wait for a real scroll
