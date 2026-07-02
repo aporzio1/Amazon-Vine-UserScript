@@ -54,6 +54,7 @@
     LAST_SYNC_KEY: 'vine_last_sync',
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
+    NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // 12 hours — "no price" results
     MAX_CACHE_SIZE: 50000,
     MAX_RETRIES: 3,
     RETRY_BASE_DELAY: 1000,
@@ -396,12 +397,18 @@
     if (callback) callback();
   }
 
+  // Failed lookups ("no price") are cached briefly so unavailable items don't
+  // re-fetch on every page load; real prices keep the full duration.
+  function cacheTTL(entry) {
+    return entry && entry.noPrice ? CONFIG.NEGATIVE_CACHE_DURATION : CONFIG.CACHE_DURATION;
+  }
+
   function cleanupExpiredCache(cache) {
     const now = Date.now();
     const cleaned = {};
     for (const asin in cache) {
       const entry = cache[asin];
-      if (entry && entry.timestamp && (now - entry.timestamp <= CONFIG.CACHE_DURATION)) {
+      if (entry && entry.timestamp && (now - entry.timestamp <= cacheTTL(entry))) {
         cleaned[asin] = entry;
       }
     }
@@ -434,13 +441,10 @@
       const results = {};
       asins.forEach(asin => {
         const entry = cache[asin];
-        if (entry && entry.timestamp && entry.price !== undefined && entry.price !== null) {
-          const age = now - entry.timestamp;
-          if (age <= CONFIG.CACHE_DURATION) {
-            results[asin] = entry;
-          } else {
-            results[asin] = null;
-          }
+        const hasValue = entry && entry.timestamp &&
+          (entry.noPrice === true || (entry.price !== undefined && entry.price !== null));
+        if (hasValue && (now - entry.timestamp) <= cacheTTL(entry)) {
+          results[asin] = entry;
         } else {
           results[asin] = null;
         }
@@ -469,6 +473,7 @@
       if (extra.priceMax != null && extra.priceMax > price) entry.priceMax = extra.priceMax;
       if (extra.isParent) entry.isParent = true;
       if (extra.isEtv) entry.isEtv = true;
+      if (extra.noPrice) entry.noPrice = true;
     }
     // Add to pending updates
     pendingCacheUpdates.set(asin, entry);
@@ -1129,6 +1134,11 @@
             attachExternalLinks(badge, asin, getTileTitle(item));
             item.appendChild(badge);
             applyColorFilter(item, color);
+          } else if (cached && !staleParentEntry && cached.noPrice) {
+            // Recently confirmed to have no price — skip the fetch and mirror
+            // the live-failure behavior (pre-release tiles get hidden).
+            item.dataset.vineNoPrice = 'true';
+            if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
             uncachedItems.push({ item, asin, url, isParent, recId });
           }
@@ -1172,9 +1182,15 @@
               item.appendChild(badge);
               applyColorFilter(item, color);
               scheduleSortRefresh();
-            } else if (isPreReleaseItem(item)) {
+            } else {
+              // Genuine no-price result (not a throttle abort): remember it so
+              // this item doesn't re-fetch on every page load.
+              if (!isThrottled()) {
+                setCachedPrice(asin, null, false, { noPrice: true, isParent });
+                item.dataset.vineNoPrice = 'true';
+              }
               // If price fetch failed but it IS a pre-release item
-              applyColorFilter(item, 'gray');
+              if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
             }
           };
 
@@ -2397,7 +2413,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           for (const [asin, localEntry] of Object.entries(safeLocalCache)) {
             if (!localEntry || typeof localEntry !== 'object') continue;
             const localTimestamp = typeof localEntry.timestamp === 'number' ? localEntry.timestamp : 0;
-            if (now - localTimestamp > CONFIG.CACHE_DURATION) continue;
+            if (now - localTimestamp > cacheTTL(localEntry)) continue;
             const remoteEntry = mergedCache[asin];
             const remoteTimestamp = remoteEntry && typeof remoteEntry === 'object' && typeof remoteEntry.timestamp === 'number'
               ? remoteEntry.timestamp
@@ -2674,7 +2690,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         const entry = cache[asin];
         if (!entry || typeof entry.timestamp !== 'number') continue;
         const age = now - entry.timestamp;
-        if (age > CONFIG.CACHE_DURATION) continue;
+        if (age > cacheTTL(entry)) continue;
         total++;
         if (age < DAY) ageBuckets['< 1 day']++;
         else if (age < 3 * DAY) ageBuckets['1–3 days']++;
