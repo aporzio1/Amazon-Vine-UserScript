@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.44.0
+// @version      1.45.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1340,6 +1340,7 @@
   let loadsSinceScroll = 0;
   const INFINITE_LOAD_COOLDOWN = 1000;
   const INFINITE_MAX_CHAIN = 5; // pages loaded without a user scroll (filters can hide everything)
+  const onInfiniteUserScroll = () => { loadsSinceScroll = 0; };
 
   function getInfiniteScroll() {
     if (!infiniteScrollLoaded) {
@@ -1367,7 +1368,7 @@
     infiniteSentinel.id = 'vine-infinite-sentinel';
     grid.parentElement.insertBefore(infiniteSentinel, grid.nextSibling);
 
-    window.addEventListener('scroll', () => { loadsSinceScroll = 0; }, { passive: true });
+    window.addEventListener('scroll', onInfiniteUserScroll, { passive: true });
 
     infiniteScrollObserver = new IntersectionObserver((entries) => {
       if (entries.some(e => e.isIntersecting)) loadNextPageInline(grid);
@@ -1376,6 +1377,7 @@
   }
 
   function teardownInfiniteScroll(endMessage) {
+    window.removeEventListener('scroll', onInfiniteUserScroll);
     if (infiniteScrollObserver) {
       infiniteScrollObserver.disconnect();
       infiniteScrollObserver = null;
