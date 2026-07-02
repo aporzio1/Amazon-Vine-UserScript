@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.44.0
+// @version      1.45.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -54,6 +54,10 @@
     LAST_SYNC_KEY: 'vine_last_sync',
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
+    NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // 12 hours — "no price" results
+    SYNC_MIN_INTERVAL: 30 * 60 * 1000, // 30 min — min gap between auto-syncs
+    CACHE_FLUSH_DEBOUNCE: 5000, // coalesce cache writes for 5s of idle...
+    CACHE_FLUSH_MAX_WAIT: 15000, // ...but never delay a pending write past 15s
     MAX_CACHE_SIZE: 50000,
     MAX_RETRIES: 3,
     RETRY_BASE_DELAY: 1000,
@@ -187,7 +191,7 @@
         method,
         url,
         headers,
-        data,
+        ...(data != null ? { data } : {}),
         onload: (response) => {
           if (response.status >= 200 && response.status < 300) {
             resolve(response);
@@ -275,6 +279,7 @@
   // Cache optimization
   const pendingCacheUpdates = new Map();
   let cacheUpdateTimeout = null;
+  let firstPendingAt = 0; // when the oldest un-flushed update was queued
   let autoAdvanceCheckTimeout = null;
   let memoryCache = null; // In-memory cache to avoid repeated storage reads
   let cacheLoaded = false;
@@ -390,10 +395,20 @@
       lastCleanupTime = now;
     }
 
-    const limited = enforceCacheSizeLimit(toSave);
+    // Skip the Object.entries()/sort machinery unless we're actually over the
+    // cap — the common case is far under it.
+    const limited = Object.keys(toSave).length > CONFIG.MAX_CACHE_SIZE
+      ? enforceCacheSizeLimit(toSave)
+      : toSave;
     memoryCache = limited; // Update in-memory cache
     setStorage(CONFIG.CACHE_KEY, limited);
     if (callback) callback();
+  }
+
+  // Failed lookups ("no price") are cached briefly so unavailable items don't
+  // re-fetch on every page load; real prices keep the full duration.
+  function cacheTTL(entry) {
+    return entry && entry.noPrice ? CONFIG.NEGATIVE_CACHE_DURATION : CONFIG.CACHE_DURATION;
   }
 
   function cleanupExpiredCache(cache) {
@@ -401,7 +416,7 @@
     const cleaned = {};
     for (const asin in cache) {
       const entry = cache[asin];
-      if (entry && entry.timestamp && (now - entry.timestamp <= CONFIG.CACHE_DURATION)) {
+      if (entry && entry.timestamp && (now - entry.timestamp <= cacheTTL(entry))) {
         cleaned[asin] = entry;
       }
     }
@@ -434,13 +449,10 @@
       const results = {};
       asins.forEach(asin => {
         const entry = cache[asin];
-        if (entry && entry.timestamp && entry.price !== undefined && entry.price !== null) {
-          const age = now - entry.timestamp;
-          if (age <= CONFIG.CACHE_DURATION) {
-            results[asin] = entry;
-          } else {
-            results[asin] = null;
-          }
+        const hasValue = entry && entry.timestamp &&
+          (entry.noPrice === true || (entry.price !== undefined && entry.price !== null));
+        if (hasValue && (now - entry.timestamp) <= cacheTTL(entry)) {
+          results[asin] = entry;
         } else {
           results[asin] = null;
         }
@@ -450,13 +462,21 @@
   }
 
   function flushCacheUpdates() {
+    if (cacheUpdateTimeout) { clearTimeout(cacheUpdateTimeout); cacheUpdateTimeout = null; }
+    firstPendingAt = 0;
     if (pendingCacheUpdates.size === 0) return;
 
-    getCache((cache) => {
-      pendingCacheUpdates.forEach((value, key) => { cache[key] = value; });
-      pendingCacheUpdates.clear();
-      setCache(cache);
-    });
+    // Re-read the latest blob from storage and fold pending updates into THAT,
+    // so a concurrent tab's newly cached prices aren't clobbered. Fall back to
+    // the in-memory copy only if storage is missing/unreadable — never wipe the
+    // cache on a transient read failure.
+    const stored = getStorage(CONFIG.CACHE_KEY, null);
+    const base = (stored && typeof stored === 'object' && !Array.isArray(stored))
+      ? stored
+      : (memoryCache && typeof memoryCache === 'object' && !Array.isArray(memoryCache) ? memoryCache : {});
+    pendingCacheUpdates.forEach((value, key) => { base[key] = value; });
+    pendingCacheUpdates.clear();
+    setCache(base);
   }
 
   function setCachedPrice(asin, price, isSeen = true, extra = null) {
@@ -469,15 +489,24 @@
       if (extra.priceMax != null && extra.priceMax > price) entry.priceMax = extra.priceMax;
       if (extra.isParent) entry.isParent = true;
       if (extra.isEtv) entry.isEtv = true;
+      if (extra.noPrice) entry.noPrice = true;
     }
     // Add to pending updates
     pendingCacheUpdates.set(asin, entry);
 
-    // Debounce the save operation (2 seconds)
+    // Debounce the save, but force a flush once the oldest pending update has
+    // waited CACHE_FLUSH_MAX_WAIT so a steady price stream can't defer it forever.
+    const now = Date.now();
+    if (!firstPendingAt) firstPendingAt = now;
     if (cacheUpdateTimeout) {
       clearTimeout(cacheUpdateTimeout);
+      cacheUpdateTimeout = null;
     }
-    cacheUpdateTimeout = setTimeout(flushCacheUpdates, 2000);
+    if (now - firstPendingAt >= CONFIG.CACHE_FLUSH_MAX_WAIT) {
+      flushCacheUpdates();
+    } else {
+      cacheUpdateTimeout = setTimeout(flushCacheUpdates, CONFIG.CACHE_FLUSH_DEBOUNCE);
+    }
   }
 
   // Price extraction
@@ -536,87 +565,151 @@
     return { price: extractPriceFromDoc(doc), pageAsin: extractPageAsin(html, doc) };
   }
 
-  function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES) {
+  // ---- Amazon throttle circuit breaker ----
+  // When Amazon signals throttling (429/503 or a robot-check interstitial),
+  // pause every Amazon-bound queue for a cooldown instead of retrying into it.
+  const THROTTLE_BASE_COOLDOWN_MS = 60000;
+  const THROTTLE_MAX_COOLDOWN_MS = 900000;
+  const THROTTLE_REQUEUE_LIMIT = 2;
+  let throttledUntil = 0;
+  let throttleStrikes = 0;
+
+  function isThrottled() {
+    return Date.now() < throttledUntil;
+  }
+
+  function noteFetchSuccess() {
+    throttleStrikes = 0;
+  }
+
+  function tripThrottle(retryAfterMs, source) {
+    const cooldown = retryAfterMs
+      ? Math.min(retryAfterMs, THROTTLE_MAX_COOLDOWN_MS)
+      : Math.min(THROTTLE_BASE_COOLDOWN_MS * Math.pow(2, throttleStrikes), THROTTLE_MAX_COOLDOWN_MS);
+    throttledUntil = Math.max(throttledUntil, Date.now() + cooldown);
+    throttleStrikes++;
+    console.warn(`[Vine] Amazon throttling detected (${source}) — pausing fetches for ${Math.round(cooldown / 1000)}s`);
+    showThrottleIndicator(throttledUntil);
+    setTimeout(() => {
+      if (isThrottled()) return; // a later trip extended the cooldown; its timer resumes
+      removeThrottleIndicator();
+      pumpDpQueue();
+      pumpVineApiQueue();
+    }, cooldown + 50);
+  }
+
+  function showThrottleIndicator(until) {
+    let el = document.getElementById('vine-throttle-indicator');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'vine-throttle-indicator';
+      el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:99999;background:#b12704;color:#fff;padding:8px 12px;border-radius:6px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.3);';
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = `Vine price fetches paused — Amazon throttling (resumes in ~${Math.max(1, Math.round((until - Date.now()) / 1000))}s)`;
+  }
+
+  function removeThrottleIndicator() {
+    const el = document.getElementById('vine-throttle-indicator');
+    if (el) el.remove();
+  }
+
+  // Robot-check/captcha interstitials are small pages (real product pages run
+  // to ~1MB), often served with HTTP 200 — sniff before parsing for a price.
+  function looksLikeRobotCheck(html) {
+    if (!html || html.length > 100000) return false;
+    return html.includes('/errors/validateCaptcha') ||
+      html.includes('api-services-support@amazon.com') ||
+      html.includes('Type the characters you see in this image') ||
+      /<title>[^<]*(Robot Check|Bot Check|CAPTCHA)/i.test(html);
+  }
+
+  // ---- /dp/ product-page fetch queue ----
+  // Product pages used to be fetched one-per-tile in parallel (30+ at once on
+  // a fresh grid), which is what trips Amazon's rate limiting. Cap concurrency
+  // and space completions out with jitter.
+  const dpQueue = [];
+  let dpActive = 0;
+  const DP_MAX_CONCURRENT = 3;
+  const DP_DELAY_MIN_MS = 100;
+  const DP_DELAY_MAX_MS = 300;
+
+  function pumpDpQueue() {
+    if (isThrottled()) return; // tripThrottle re-pumps after the cooldown
+    while (dpActive < DP_MAX_CONCURRENT && dpQueue.length > 0) {
+      const task = dpQueue.shift();
+      dpActive++;
+      task(() => {
+        dpActive--;
+        setTimeout(pumpDpQueue, DP_DELAY_MIN_MS + Math.random() * (DP_DELAY_MAX_MS - DP_DELAY_MIN_MS));
+      });
+    }
+  }
+
+  function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES, requeues = 0) {
     if (!isValidAmazonURL(url)) {
       callback(null);
       return;
     }
-
-    productFetchQueue.push((done) => {
-      const retry = (extraDelayMs = 0) => {
-        done();
-        if (retries > 0) {
-          const base = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
-          const jitter = Math.random() * 500;
-          const delay = Math.max(base + jitter, extraDelayMs);
-          setTimeout(() => fetchPrice(url, asin, callback, retries - 1), delay);
-        } else {
-          callback(null);
-        }
-      };
-
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url,
-        onload: (response) => {
-          if (response.status === 503) {
-            // Amazon is rate-limiting — back off globally then retry with a long delay.
-            const retryAfterMs = parseRetryAfterMs(response.responseHeaders) || 30000;
-            productFetch503BackoffUntil = Math.max(productFetch503BackoffUntil, Date.now() + retryAfterMs);
-            console.warn(`[Vine] 503 from Amazon — pausing product fetches for ${Math.round(retryAfterMs / 1000)}s`);
-            retry(retryAfterMs);
-            return;
-          }
-          if (response.status !== 200) {
-            retry();
-            return;
-          }
-          done();
-          const { price, pageAsin } = extractPriceFromHTML(response.responseText);
-          // Page loaded fine but carries no price (pre-release / unavailable):
-          // retrying would just re-download the same page.
-          if (price === null) return callback(null);
-          // Amazon substituted a different variant (typically a parent's default
-          // child) — its price is not this ASIN's price.
-          if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
-            return callback({ price, isCached: false, unreliable: true });
-          }
-          callback({ price, isCached: false });
-        },
-        onerror: () => retry()
-      });
-    });
-    pumpProductFetchQueue();
+    dpQueue.push((done) => fetchPriceNow(url, asin, callback, retries, requeues, done));
+    pumpDpQueue();
   }
 
-  // ---- Product-page fetch queue (rate-limit guard) ----
-  // Amazon responds with 503 when too many product pages are fetched concurrently.
-  // All fetchPrice calls go through this queue so at most PRODUCT_FETCH_MAX_CONCURRENT
-  // requests are in-flight at once.
-  const productFetchQueue = [];
-  let productFetchActive = 0;
-  const PRODUCT_FETCH_MAX_CONCURRENT = 3;
+  function fetchPriceNow(url, asin, callback, retries, requeues, done) {
+    // Transient failure: free the slot, back off, rejoin the queue tail.
+    const retry = () => {
+      done();
+      if (retries > 0) {
+        const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
+        setTimeout(() => fetchPrice(url, asin, callback, retries - 1, requeues), delay);
+      } else {
+        callback(null);
+      }
+    };
 
-  // Milliseconds to pause ALL new product fetches after a 503 is received.
-  // Set to 0 when clear.  Shared across all callers so one 503 backs off the whole queue.
-  let productFetch503BackoffUntil = 0;
+    // Amazon is throttling: re-enqueue (bounded) so the item retries after the
+    // cooldown without counting as a failed fetch.
+    const requeue = () => {
+      done();
+      if (requeues >= THROTTLE_REQUEUE_LIMIT) {
+        callback(null);
+      } else {
+        fetchPrice(url, asin, callback, retries, requeues + 1);
+      }
+    };
 
-  function pumpProductFetchQueue() {
-    const now = Date.now();
-    if (now < productFetch503BackoffUntil) {
-      // Still in 503 backoff — reschedule a pump for when it expires.
-      const remaining = productFetch503BackoffUntil - now;
-      setTimeout(pumpProductFetchQueue, remaining + 100);
-      return;
-    }
-    while (productFetchActive < PRODUCT_FETCH_MAX_CONCURRENT && productFetchQueue.length > 0) {
-      const task = productFetchQueue.shift();
-      productFetchActive++;
-      task(() => {
-        productFetchActive--;
-        pumpProductFetchQueue();
-      });
-    }
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      onload: (response) => {
+        if (response.status === 404 || response.status === 410) {
+          done();
+          return callback(null); // gone for good — retrying can't help
+        }
+        if (response.status === 429 || response.status === 503) {
+          tripThrottle(parseRetryAfterMs(response.responseHeaders), `HTTP ${response.status}`);
+          return requeue();
+        }
+        if (response.status !== 200) return retry();
+        if (looksLikeRobotCheck(response.responseText)) {
+          tripThrottle(null, 'robot check');
+          return requeue();
+        }
+        noteFetchSuccess();
+        done();
+        const { price, pageAsin } = extractPriceFromHTML(response.responseText);
+        // Page loaded fine but carries no price (pre-release / unavailable):
+        // retrying would just re-download the same page.
+        if (price === null) return callback(null);
+        // Amazon substituted a different variant (typically a parent's default
+        // child) — its price is not this ASIN's price.
+        if (pageAsin && asin && pageAsin !== asin.toUpperCase()) {
+          return callback({ price, isCached: false, unreliable: true });
+        }
+        callback({ price, isCached: false });
+      },
+      onerror: retry
+    });
   }
 
   // ---- Vine recommendations API (parent-ASIN listings) ----
@@ -631,6 +724,7 @@
   const VINE_API_MAX_CONCURRENT = 2;
 
   function pumpVineApiQueue() {
+    if (isThrottled()) return; // tripThrottle re-pumps after the cooldown
     while (vineApiActive < VINE_API_MAX_CONCURRENT && vineApiQueue.length > 0) {
       const task = vineApiQueue.shift();
       vineApiActive++;
@@ -652,8 +746,11 @@
           callback(json && json.result ? json.result : null);
         })
         .catch(err => {
-          // On 429, hold the slot until Retry-After elapses so we don't hammer the API.
           const retryAfter = parseRetryAfterMs(err.responseHeaders);
+          if (err.status === 429 || err.status === 503) {
+            tripThrottle(retryAfter, `vine API HTTP ${err.status}`);
+          }
+          // On 429, hold the slot until Retry-After elapses so we don't hammer the API.
           setTimeout(done, err.status === 429 ? (retryAfter || 5000) : 0);
           callback(null);
         });
@@ -1061,6 +1158,11 @@
             attachExternalLinks(badge, asin, getTileTitle(item));
             item.appendChild(badge);
             applyColorFilter(item, color);
+          } else if (cached && !staleParentEntry && cached.noPrice) {
+            // Recently confirmed to have no price — skip the fetch and mirror
+            // the live-failure behavior (pre-release tiles get hidden).
+            item.dataset.vineNoPrice = 'true';
+            if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
             uncachedItems.push({ item, asin, url, isParent, recId });
           }
@@ -1104,9 +1206,15 @@
               item.appendChild(badge);
               applyColorFilter(item, color);
               scheduleSortRefresh();
-            } else if (isPreReleaseItem(item)) {
+            } else {
+              // Genuine no-price result (not a throttle abort): remember it so
+              // this item doesn't re-fetch on every page load.
+              if (!isThrottled()) {
+                setCachedPrice(asin, null, false, { noPrice: true, isParent });
+                item.dataset.vineNoPrice = 'true';
+              }
               // If price fetch failed but it IS a pre-release item
-              applyColorFilter(item, 'gray');
+              if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
             }
           };
 
@@ -1232,6 +1340,7 @@
   let loadsSinceScroll = 0;
   const INFINITE_LOAD_COOLDOWN = 1000;
   const INFINITE_MAX_CHAIN = 5; // pages loaded without a user scroll (filters can hide everything)
+  const onInfiniteUserScroll = () => { loadsSinceScroll = 0; };
 
   function getInfiniteScroll() {
     if (!infiniteScrollLoaded) {
@@ -1259,7 +1368,7 @@
     infiniteSentinel.id = 'vine-infinite-sentinel';
     grid.parentElement.insertBefore(infiniteSentinel, grid.nextSibling);
 
-    window.addEventListener('scroll', () => { loadsSinceScroll = 0; }, { passive: true });
+    window.addEventListener('scroll', onInfiniteUserScroll, { passive: true });
 
     infiniteScrollObserver = new IntersectionObserver((entries) => {
       if (entries.some(e => e.isIntersecting)) loadNextPageInline(grid);
@@ -1268,6 +1377,7 @@
   }
 
   function teardownInfiniteScroll(endMessage) {
+    window.removeEventListener('scroll', onInfiniteUserScroll);
     if (infiniteScrollObserver) {
       infiniteScrollObserver.disconnect();
       infiniteScrollObserver = null;
@@ -1284,7 +1394,7 @@
   }
 
   async function loadNextPageInline(grid) {
-    if (isLoadingNextPage || !nextPageHref) return;
+    if (isLoadingNextPage || !nextPageHref || isThrottled()) return;
     const now = Date.now();
     if (now - lastInfiniteLoadAt < INFINITE_LOAD_COOLDOWN) return;
     if (loadsSinceScroll >= INFINITE_MAX_CHAIN) return; // wait for a real scroll
@@ -2329,7 +2439,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           for (const [asin, localEntry] of Object.entries(safeLocalCache)) {
             if (!localEntry || typeof localEntry !== 'object') continue;
             const localTimestamp = typeof localEntry.timestamp === 'number' ? localEntry.timestamp : 0;
-            if (now - localTimestamp > CONFIG.CACHE_DURATION) continue;
+            if (now - localTimestamp > cacheTTL(localEntry)) continue;
             const remoteEntry = mergedCache[asin];
             const remoteTimestamp = remoteEntry && typeof remoteEntry === 'object' && typeof remoteEntry.timestamp === 'number'
               ? remoteEntry.timestamp
@@ -2606,7 +2716,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         const entry = cache[asin];
         if (!entry || typeof entry.timestamp !== 'number') continue;
         const age = now - entry.timestamp;
-        if (age > CONFIG.CACHE_DURATION) continue;
+        if (age > cacheTTL(entry)) continue;
         total++;
         if (age < DAY) ageBuckets['< 1 day']++;
         else if (age < 3 * DAY) ageBuckets['1–3 days']++;
@@ -3605,6 +3715,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.CACHE_KEY, {});
         memoryCache = {};
         pendingCacheUpdates.clear();
+        if (cacheUpdateTimeout) { clearTimeout(cacheUpdateTimeout); cacheUpdateTimeout = null; }
+        firstPendingAt = 0;
         clearCacheBtn.textContent = clearOriginalText;
         clearCacheBtn.classList.remove('armed');
         clearArmed = false;
@@ -4287,9 +4399,18 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       processVineItems(true);
 
       // Auto-sync if a GitHub token is configured. Cache-expiry cleanup is deferred in getCache.
+      // Throttled to at most once per SYNC_MIN_INTERVAL across page loads/tabs
+      // so navigating Vine doesn't re-transfer the whole cache blob every time.
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
-      if (githubToken) {
+      const syncFreshEnough = () =>
+        (Date.now() - (getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0)) < CONFIG.SYNC_MIN_INTERVAL;
+      if (githubToken && !syncFreshEnough()) {
+        // Jitter so multiple open tabs don't all sync at once.
         setTimeout(() => {
+          if (syncFreshEnough()) {
+            console.log('Vine Price Display: Auto-sync skipped (recently synced)');
+            return;
+          }
           console.log('Vine Price Display: Starting auto-sync...');
           syncWithGitHub(githubToken)
             .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} cached items)`))
@@ -4300,7 +4421,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           syncKeywordsWithGitHub(githubToken)
             .then(result => console.log(`Vine Price Display: Keywords auto-sync complete (${result.count} keywords)`))
             .catch(err => console.error('Vine Price Display: Keywords auto-sync failed', err));
-        }, 2000);
+        }, 2000 + Math.random() * 3000);
       }
 
       observePageChanges();
