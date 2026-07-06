@@ -66,7 +66,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 ## Usage
 
 1. **Color Filter**: Use the checkboxes at the top of the grid to filter items by price range (green/yellow/red)
-2. **AI Review Generator**: On product pages, use the AI generator to create reviews (requires an API key for your chosen provider in Settings)
+2. **AI Review Generator**: On product pages, use the AI generator to create reviews (requires an API key for your chosen provider in Settings). Closing the panel leaves a "🤖 AI Review Generator" button in its place to reopen it
 3. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
 4. **Saved Searches**: Use the "Saved Searches" tab to add, rename (click ✏️), delete (click 🗑️ twice), and reorder (drag the ⋮⋮ handle) your favorite search terms
 5. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
@@ -82,12 +82,13 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **V V (double-tap)**: Open/Close Vine Tools modal (press V twice within 500ms)
 - **Escape**: Close any open modal (including the AI Review Generator)
 - **1**: Toggle Hide Cached filter
-- **3**: Toggle Purple filter (🟣 $0 items)
 - **4**: Toggle Green filter (🟢 $90+ items)
 - **5**: Toggle Yellow filter (🟡 mid-range items)
 - **6**: Toggle Red filter (🔴 low-value items)
 - **← (Left Arrow)**: Go to previous page
 - **→ (Right Arrow)**: Go to next page
+
+Filter and pagination shortcuts are ignored while the Vine Tools modal is open, so typing or clicking inside the modal can't change filters on the page behind it.
 
 
 ## How It Works

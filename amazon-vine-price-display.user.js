@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.45.1
+// @version      1.46.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -250,6 +250,32 @@
       if (hideTimer) clearTimeout(hideTimer);
       hideTimer = setTimeout(() => { statusEl.style.display = 'none'; }, timeoutMs);
     };
+  }
+
+  // Two-step destructive button: first click arms (confirm label + .armed),
+  // second click within timeoutMs fires onConfirm; otherwise it disarms.
+  function wireConfirmButton(btn, confirmText, onConfirm, timeoutMs = 3000) {
+    const restoreText = btn.textContent;
+    let armed = false;
+    let disarmTimer = null;
+    const disarm = () => {
+      armed = false;
+      btn.textContent = restoreText;
+      btn.classList.remove('armed');
+      if (disarmTimer) { clearTimeout(disarmTimer); disarmTimer = null; }
+    };
+    btn.addEventListener('click', () => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = confirmText;
+        btn.classList.add('armed');
+        if (disarmTimer) clearTimeout(disarmTimer);
+        disarmTimer = setTimeout(disarm, timeoutMs);
+        return;
+      }
+      disarm();
+      onConfirm();
+    });
   }
 
   function escapeHtml(text) {
@@ -1380,6 +1406,10 @@
       : null;
     if (!nextPageHref) return;
 
+    // A previous teardown may have left an end-message sentinel in the DOM.
+    const staleSentinel = document.getElementById('vine-infinite-sentinel');
+    if (staleSentinel) staleSentinel.remove();
+
     infiniteSentinel = document.createElement('div');
     infiniteSentinel.id = 'vine-infinite-sentinel';
     grid.parentElement.insertBefore(infiniteSentinel, grid.nextSibling);
@@ -1447,7 +1477,10 @@
       });
       // The MutationObserver routes these through processBatch (they lack
       // vinePriceProcessed). Scripts parsed by DOMParser are inert.
-      appended.forEach(tile => grid.appendChild(tile));
+      // One fragment append = one layout + one observer batch.
+      const fragment = document.createDocumentFragment();
+      appended.forEach(tile => fragment.appendChild(tile));
+      grid.appendChild(fragment);
 
       // Advance pagination state from the FETCHED document — the live DOM
       // still points at the page we just consumed.
@@ -1470,7 +1503,13 @@
       if (err && err.status === 503) {
         const retryAfterMs = parseRetryAfterMs(err.responseHeaders) || 30000;
         console.warn(`[Vine] Infinite scroll got 503 — retrying in ${Math.round(retryAfterMs / 1000)}s`);
-        setTimeout(() => loadNextPageInline(grid), retryAfterMs);
+        // No page was consumed — don't let the failed attempt count against
+        // the no-scroll chain cap, or a 503 near the cap can never retry.
+        loadsSinceScroll = Math.max(0, loadsSinceScroll - 1);
+        setTimeout(() => {
+          // User may have disabled infinite scroll during the wait.
+          if (infiniteScrollObserver) loadNextPageInline(grid);
+        }, retryAfterMs);
       } else {
         console.error('[Vine] Infinite scroll load failed:', err);
       }
@@ -1508,10 +1547,15 @@
   // Mutation observer
   let mutationObserver = null;
   let processingTimeout = null;
+  let processingRaf = null;
 
   function observePageChanges() {
     if (mutationObserver) {
       mutationObserver.disconnect();
+    }
+    if (processingRaf) {
+      cancelAnimationFrame(processingRaf);
+      processingRaf = null;
     }
     if (processingTimeout) {
       clearTimeout(processingTimeout);
@@ -1544,10 +1588,12 @@
 
       if (!hasRelevantChanges) return;
 
-      if (processingTimeout) {
-        clearTimeout(processingTimeout);
-      }
-      requestAnimationFrame(() => {
+      // Cancel BOTH pending stages: a stale rAF from an earlier batch would
+      // otherwise queue a second timeout and double-run processVineItems.
+      if (processingRaf) cancelAnimationFrame(processingRaf);
+      if (processingTimeout) clearTimeout(processingTimeout);
+      processingRaf = requestAnimationFrame(() => {
+        processingRaf = null;
         processingTimeout = setTimeout(() => {
           processVineItems(false);
         }, CONFIG.MUTATION_DEBOUNCE);
@@ -1966,26 +2012,27 @@
   }
 
   // AI Review Generator
+  // Per-provider storage keys — keeps generateReview free of nested provider ternaries.
+  const PROVIDER_STORAGE = {
+    openai: { apiKey: CONFIG.OPENAI_API_KEY, model: null },
+    deepseek: { apiKey: CONFIG.DEEPSEEK_API_KEY, model: CONFIG.DEEPSEEK_MODEL },
+    claude: { apiKey: CONFIG.CLAUDE_API_KEY, model: CONFIG.CLAUDE_MODEL }
+  };
+
   async function generateReview(productDescription, starRating, userComments, onRetry) {
     const providerKey = getStorage(CONFIG.AI_PROVIDER, 'openai');
     const provider = CONFIG.PROVIDERS[providerKey] || CONFIG.PROVIDERS.openai;
-    const isDeepseek = provider === CONFIG.PROVIDERS.deepseek;
+    const storageKeys = PROVIDER_STORAGE[providerKey] || PROVIDER_STORAGE.openai;
     const isClaude = provider === CONFIG.PROVIDERS.claude;
-    const apiKey = isClaude
-      ? getStorage(CONFIG.CLAUDE_API_KEY, '')
-      : isDeepseek
-        ? getStorage(CONFIG.DEEPSEEK_API_KEY, '')
-        : getStorage(CONFIG.OPENAI_API_KEY, '');
+    const apiKey = getStorage(storageKeys.apiKey, '');
 
     if (!apiKey) {
       throw new Error(`${provider.label} API key not configured. Please add your key in Vine Tools > Price Settings.`);
     }
 
-    const model = isClaude
-      ? (getStorage(CONFIG.CLAUDE_MODEL, '') || provider.defaultModel)
-      : isDeepseek
-        ? (getStorage(CONFIG.DEEPSEEK_MODEL, '') || provider.defaultModel)
-        : provider.defaultModel;
+    const model = storageKeys.model
+      ? (getStorage(storageKeys.model, '') || provider.defaultModel)
+      : provider.defaultModel;
 
     const sentiment = starRating >= 4 ? 'positive' : starRating >= 3 ? 'neutral' : 'negative';
 
@@ -2098,7 +2145,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           }
           return textBlock.text.trim();
         }
-        return data.choices[0].message.content.trim();
+        const choice = data.choices && data.choices[0];
+        if (!choice || !choice.message || typeof choice.message.content !== 'string') {
+          throw new Error(`${provider.label} returned no review content. Try again.`);
+        }
+        return choice.message.content.trim();
       } catch (error) {
         const info = parseOpenAIError(error);
         const isRateLimit = info.status === 429 && info.code !== 'insufficient_quota';
@@ -2290,11 +2341,28 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     const bodyDiv = document.getElementById('vine-review-body');
     const statusDiv = document.getElementById('vine-review-status');
 
-    closeBtn.addEventListener('click', () => { container.style.display = 'none'; });
+    // Closing used to orphan the panel (display:none + the getElementById
+    // early-return above blocked recreation). A reopen button restores it.
+    const reopenBtn = document.createElement('button');
+    reopenBtn.type = 'button';
+    reopenBtn.id = 'vine-reopen-generator';
+    reopenBtn.className = 'vine-btn-secondary vine-review-reopen';
+    reopenBtn.textContent = '🤖 AI Review Generator';
+    reopenBtn.setAttribute('aria-label', 'Reopen AI review generator');
+    reopenBtn.style.display = 'none';
+    container.parentNode.insertBefore(reopenBtn, container);
+    reopenBtn.addEventListener('click', () => {
+      container.style.display = '';
+      reopenBtn.style.display = 'none';
+    });
+    closeBtn.addEventListener('click', () => {
+      container.style.display = 'none';
+      reopenBtn.style.display = '';
+    });
     const showStatus = makeShowStatus(statusDiv, 5000);
 
     generateBtn.addEventListener('click', async () => {
-      const stars = parseInt(starsSelect.value);
+      const stars = parseInt(starsSelect.value, 10);
       const comments = commentsTextarea.value.trim();
 
       generateBtn.disabled = true;
@@ -2400,6 +2468,26 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
   }
 
   // Cloud Sync (GitHub Gist)
+
+  // Locate the gist holding fileName, or create it. The gist list is
+  // paginated (30/page by default) — without walking pages, users with many
+  // gists silently got a duplicate sync gist created on every new device.
+  async function findOrCreateGist(gh, fileName, description, initialContent) {
+    for (let page = 1; page <= 10; page++) {
+      const gists = await gh(`gists?per_page=100&page=${page}`);
+      if (!Array.isArray(gists) || gists.length === 0) break;
+      const existing = gists.find(g => g.files && g.files[fileName]);
+      if (existing) return existing.id;
+      if (gists.length < 100) break; // last page
+    }
+    const newGist = await gh('gists', 'POST', {
+      description,
+      public: false,
+      files: { [fileName]: { content: initialContent } }
+    });
+    return newGist.id;
+  }
+
   async function syncWithGitHub(token) {
     if (!token) throw new Error('No GitHub Token provided');
 
@@ -2412,18 +2500,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
     try {
       if (!gistId) {
-        const gists = await gh('gists');
-        const existingGist = gists.find(g => g.files && g.files[gistFileName]);
-        if (existingGist) {
-          gistId = existingGist.id;
-        } else {
-          const newGist = await gh('gists', 'POST', {
-            description: 'Amazon Vine Price Cache (Synced)',
-            public: false,
-            files: { [gistFileName]: { content: JSON.stringify({}) } }
-          });
-          gistId = newGist.id;
-        }
+        gistId = await findOrCreateGist(gh, gistFileName, 'Amazon Vine Price Cache (Synced)', JSON.stringify({}));
         setStorage(CONFIG.GIST_ID_KEY, gistId);
       }
 
@@ -2512,22 +2589,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
     try {
       if (!gistId) {
-        const gists = await gh('gists');
-        const existingGist = gists.find(g => g.files && g.files[gistFileName]);
-
-        if (existingGist) {
-          gistId = existingGist.id;
-        } else {
-          const initialData = { timestamp: Date.now(), searches: [] };
-          const newGist = await gh('gists', 'POST', {
-            description: 'Amazon Vine Saved Searches (Synced)',
-            public: false,
-            files: { [gistFileName]: { content: JSON.stringify(initialData) } }
-          });
-          gistId = newGist.id;
-        }
+        gistId = await findOrCreateGist(
+          gh, gistFileName, 'Amazon Vine Saved Searches (Synced)',
+          JSON.stringify({ timestamp: Date.now(), searches: [] })
+        );
         setStorage(CONFIG.GIST_SEARCHES_ID_KEY, gistId);
       }
+
+      // Drop malformed/legacy entries (missing string `term`) so merge
+      // comparisons below can't throw on `.term.toLowerCase()`.
+      const normalizeSearches = (arr) => (Array.isArray(arr) ? arr : [])
+        .filter(s => s && typeof s === 'object' && typeof s.term === 'string');
 
       const gistData = await gh(`gists/${gistId}`);
       let remoteData = { timestamp: 0, searches: [] };
@@ -2537,17 +2609,21 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           // Handle old format (array) vs new format (object with timestamp)
           if (Array.isArray(parsedContent)) {
             remoteData = { timestamp: 0, searches: parsedContent };
-          } else {
-            remoteData = parsedContent;
+          } else if (parsedContent && typeof parsedContent === 'object') {
+            remoteData = {
+              timestamp: typeof parsedContent.timestamp === 'number' ? parsedContent.timestamp : 0,
+              searches: parsedContent.searches
+            };
           }
         } catch (e) {
           console.error('Error parsing remote searches:', e);
           remoteData = { timestamp: 0, searches: [] };
         }
       }
+      remoteData.searches = normalizeSearches(remoteData.searches);
 
       // 3. Get local searches and timestamp
-      const localSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+      const localSearches = normalizeSearches(getStorage(CONFIG.SAVED_SEARCHES_KEY, []));
       const localTimestamp = getStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, 0);
 
       // 4. Determine which version is newer and merge
@@ -2592,20 +2668,24 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         });
       }
 
-      // 5. Update local storage if needed
+      // 5. Persist — both sides must end on the SAME timestamp, or the next
+      // sync sees a fake "newer" side and re-pulls/pushes forever.
+      const mergedTimestamp = Math.max(localTimestamp, remoteData.timestamp) || Date.now();
+
       if (shouldUpdateLocal) {
         setStorage(CONFIG.SAVED_SEARCHES_KEY, finalSearches);
-        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, remoteData.timestamp);
+        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, mergedTimestamp);
       }
 
       if (shouldUpdateRemote) {
         const updateData = {
-          timestamp: localTimestamp || Date.now(),
+          timestamp: mergedTimestamp,
           searches: finalSearches
         };
         await gh(`gists/${gistId}`, 'PATCH', {
           files: { [gistFileName]: { content: JSON.stringify(updateData) } }
         });
+        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, mergedTimestamp);
       }
 
       return { success: true, count: finalSearches.length };
@@ -2627,19 +2707,10 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
     try {
       if (!gistId) {
-        const gists = await gh('gists');
-        const existingGist = gists.find(g => g.files && g.files[gistFileName]);
-        if (existingGist) {
-          gistId = existingGist.id;
-        } else {
-          const initialData = { timestamp: 0, highlight: [], block: [] };
-          const newGist = await gh('gists', 'POST', {
-            description: 'Amazon Vine Keyword Lists (Synced)',
-            public: false,
-            files: { [gistFileName]: { content: JSON.stringify(initialData) } }
-          });
-          gistId = newGist.id;
-        }
+        gistId = await findOrCreateGist(
+          gh, gistFileName, 'Amazon Vine Keyword Lists (Synced)',
+          JSON.stringify({ timestamp: 0, highlight: [], block: [] })
+        );
         setStorage(CONFIG.GIST_KEYWORDS_ID_KEY, gistId);
       }
 
@@ -2661,11 +2732,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const localLists = getKeywordListsSync();
       const localTimestamp = getStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, 0);
 
-      const applyRemote = (lists) => {
+      const applyLocal = (lists, timestamp) => {
         cachedKeywordLists = lists;
         keywordListsRevision++;
         setStorage(CONFIG.KEYWORD_LISTS_KEY, lists);
-        setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, remoteData.timestamp);
+        setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, timestamp);
         applyColorFilterToAllItems();
       };
 
@@ -2677,7 +2748,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         });
       } else if (remoteData.timestamp > localTimestamp) {
         finalLists = { highlight: remoteData.highlight, block: remoteData.block };
-        applyRemote(finalLists);
+        applyLocal(finalLists, remoteData.timestamp);
       } else {
         const union = (a, b) => Array.from(new Set([...a, ...b]));
         finalLists = {
@@ -2688,11 +2759,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           || finalLists.block.length !== localLists.block.length;
         const changedRemote = finalLists.highlight.length !== remoteData.highlight.length
           || finalLists.block.length !== remoteData.block.length;
-        if (changedLocal) applyRemote(finalLists);
+        // Both sides must land on the same timestamp after a merge, or the
+        // next sync misreads one side as newer and re-syncs forever.
+        const mergedTimestamp = Math.max(localTimestamp, remoteData.timestamp) || Date.now();
+        if (changedLocal) applyLocal(finalLists, mergedTimestamp);
         if (changedRemote) {
           await gh(`gists/${gistId}`, 'PATCH', {
-            files: { [gistFileName]: { content: JSON.stringify({ timestamp: localTimestamp || Date.now(), ...finalLists }) } }
+            files: { [gistFileName]: { content: JSON.stringify({ timestamp: mergedTimestamp, ...finalLists }) } }
           });
+          setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, mergedTimestamp);
         }
       }
 
@@ -2953,6 +3028,10 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       if (thresholds.YELLOW_MIN == null) thresholds.YELLOW_MIN = CONFIG.DEFAULT_THRESHOLDS.YELLOW_MIN;
       if (thresholds.RED_MAX == null) thresholds.RED_MAX = CONFIG.DEFAULT_THRESHOLDS.RED_MAX;
 
+      // Keep the badge-coloring hot path in step with what the modal shows —
+      // otherwise migrated/backfilled values only take effect after a Save.
+      cachedThresholds = thresholds;
+
       const autoAdvanceEnabled = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
@@ -3052,7 +3131,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           </div>
           <div id="vine-openai-section" style="margin-bottom: 12px; ${aiProvider !== 'openai' ? 'display: none;' : ''}">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">OpenAI API Key:</label>
-            <input type="password" id="vine-openai-key" value="${getStorage(CONFIG.OPENAI_API_KEY, '')}"
+            <input type="password" id="vine-openai-key"
               placeholder="sk-..."
               style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
             <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
@@ -3061,11 +3140,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           </div>
           <div id="vine-claude-section" style="margin-bottom: 12px; ${aiProvider !== 'claude' ? 'display: none;' : ''}">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Anthropic API Key:</label>
-            <input type="password" id="vine-claude-key" value="${getStorage(CONFIG.CLAUDE_API_KEY, '')}"
+            <input type="password" id="vine-claude-key"
               placeholder="sk-ant-..."
               style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; margin-bottom: 8px;">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Claude Model:</label>
-            <input type="text" id="vine-claude-model" value="${getStorage(CONFIG.CLAUDE_MODEL, '') || 'claude-opus-4-8'}"
+            <input type="text" id="vine-claude-model"
               placeholder="claude-opus-4-8"
               style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
             <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
@@ -3074,11 +3153,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           </div>
           <div id="vine-deepseek-section" style="margin-bottom: 12px; ${aiProvider !== 'deepseek' ? 'display: none;' : ''}">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">DeepSeek API Key:</label>
-            <input type="password" id="vine-deepseek-key" value="${getStorage(CONFIG.DEEPSEEK_API_KEY, '')}"
+            <input type="password" id="vine-deepseek-key"
               placeholder="sk-..."
               style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; margin-bottom: 8px;">
             <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">DeepSeek Model:</label>
-            <input type="text" id="vine-deepseek-model" value="${getStorage(CONFIG.DEEPSEEK_MODEL, '') || 'deepseek-v4-flash'}"
+            <input type="text" id="vine-deepseek-model"
               placeholder="deepseek-v4-flash"
               style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
             <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
@@ -3152,8 +3231,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
             
             <div style="margin-bottom: 16px;">
               <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">GitHub Personal Access Token:</label>
-              <input type="password" id="vine-github-token" value="${githubToken}" 
-                placeholder="ghp_..." 
+              <input type="password" id="vine-github-token"
+                placeholder="ghp_..."
                 style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
               <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 4px;">
                 Token requires <strong>gist</strong> permission. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Vine%20Price%20Scaler" target="_blank" style="color: var(--vine-link);">Generate Token</a>
@@ -3271,6 +3350,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const openaiSection = dialog.querySelector('#vine-openai-section');
       const deepseekSection = dialog.querySelector('#vine-deepseek-section');
       const claudeSection = dialog.querySelector('#vine-claude-section');
+
+      // Secrets are set as DOM properties, never interpolated into innerHTML —
+      // a synced value containing a quote must not be able to break out of an attribute.
+      openaiKeyInput.value = getStorage(CONFIG.OPENAI_API_KEY, '');
+      claudeKeyInput.value = getStorage(CONFIG.CLAUDE_API_KEY, '');
+      claudeModelInput.value = getStorage(CONFIG.CLAUDE_MODEL, '') || CONFIG.PROVIDERS.claude.defaultModel;
+      deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
+      deepseekModelInput.value = getStorage(CONFIG.DEEPSEEK_MODEL, '') || CONFIG.PROVIDERS.deepseek.defaultModel;
+      githubTokenInput.value = githubToken;
 
       const showStatus = makeShowStatus(statusDiv, 3000);
       closeBtn.addEventListener('click', closeSettingsModal);
@@ -3457,16 +3545,20 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           const kw = input.value.trim().toLowerCase();
           if (!kw) return;
           const current = getKeywordListsSync();
-          if (!current[listName].includes(kw)) {
-            setKeywordLists({ ...current, [listName]: [...current[listName], kw] });
+          if (current[listName].includes(kw)) {
+            // Duplicate: skip the full re-filter + gist sync a real add triggers.
+            input.value = '';
+            showStatus(`"${kw}" is already in the list`, true);
+            return;
           }
+          setKeywordLists({ ...current, [listName]: [...current[listName], kw] });
           input.value = '';
           renderKeywordChips();
           applyColorFilterToAllItems();
           syncKeywordsInBackground();
         };
         addBtn.addEventListener('click', add);
-        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
       }
 
       wireKeywordAdd('highlight');
@@ -3601,21 +3693,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         deleteBtn.className = 'vine-search-delete';
         deleteBtn.textContent = '🗑️';
         deleteBtn.setAttribute('aria-label', `Delete "${search.name}"`);
-        let armed = false;
-        let disarmTimer = null;
-        deleteBtn.addEventListener('click', () => {
-          if (!armed) {
-            armed = true;
-            deleteBtn.textContent = '⚠️ Confirm?';
-            deleteBtn.classList.add('armed');
-            if (disarmTimer) clearTimeout(disarmTimer);
-            disarmTimer = setTimeout(() => {
-              armed = false;
-              deleteBtn.textContent = '🗑️';
-              deleteBtn.classList.remove('armed');
-            }, 3000);
-            return;
-          }
+        wireConfirmButton(deleteBtn, '⚠️ Confirm?', () => {
           const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
           searches.splice(index, 1);
           persistSearches(searches, 'Search deleted');
@@ -3691,7 +3769,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         });
       }
 
-      addSearchBtn.addEventListener('click', async () => {
+      addSearchBtn.addEventListener('click', () => {
         const term = newSearchTerm.value.trim();
         if (!term) {
           showStatus('Please enter a search term', true);
@@ -3704,39 +3782,21 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       });
 
       // Allow Enter key to add search
-      newSearchTerm.addEventListener('keypress', (e) => {
+      newSearchTerm.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
+          e.preventDefault();
           addSearchBtn.click();
         }
       });
 
       renderSearches();
 
-      let clearArmed = false;
-      let clearDisarm = null;
-      const clearOriginalText = clearCacheBtn.textContent;
-      clearCacheBtn.addEventListener('click', () => {
-        if (!clearArmed) {
-          clearArmed = true;
-          clearCacheBtn.textContent = '⚠️ Confirm: clear all cached prices?';
-          clearCacheBtn.classList.add('armed');
-          if (clearDisarm) clearTimeout(clearDisarm);
-          clearDisarm = setTimeout(() => {
-            clearArmed = false;
-            clearCacheBtn.textContent = clearOriginalText;
-            clearCacheBtn.classList.remove('armed');
-          }, 3000);
-          return;
-        }
+      wireConfirmButton(clearCacheBtn, '⚠️ Confirm: clear all cached prices?', () => {
         setStorage(CONFIG.CACHE_KEY, {});
         memoryCache = {};
         pendingCacheUpdates.clear();
         if (cacheUpdateTimeout) { clearTimeout(cacheUpdateTimeout); cacheUpdateTimeout = null; }
         firstPendingAt = 0;
-        clearCacheBtn.textContent = clearOriginalText;
-        clearCacheBtn.classList.remove('armed');
-        clearArmed = false;
-        if (clearDisarm) { clearTimeout(clearDisarm); clearDisarm = null; }
         showStatus('Cache cleared');
       });
 
@@ -3747,9 +3807,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       // Focus trap inside the dialog (Tab / Shift-Tab cycles first↔last).
       dialog.addEventListener('keydown', (e) => {
         if (e.key !== 'Tab') return;
-        const focusables = dialog.querySelectorAll(
+        // Skip controls inside hidden tab panels (offsetParent is null for
+        // display:none) or the trap wraps focus onto invisible elements.
+        const focusables = Array.from(dialog.querySelectorAll(
           'a[href], button:not([disabled]), textarea, input:not([disabled]), select, [tabindex]:not([tabindex="-1"])'
-        );
+        )).filter(el => el.offsetParent !== null);
         if (focusables.length === 0) return;
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
@@ -4249,6 +4311,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       cursor: pointer;
     }
     .vine-review-close:hover { background: var(--vine-secondary); }
+    .vine-review-reopen { margin: 10px 0; }
     .vine-review-label {
       display: block;
       margin: 10px 0 4px;
@@ -4353,9 +4416,16 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (reviewPanel && reviewPanel.style.display !== 'none') {
           e.preventDefault();
           reviewPanel.style.display = 'none';
+          const reopenBtn = document.getElementById('vine-reopen-generator');
+          if (reopenBtn) reopenBtn.style.display = '';
           return;
         }
       }
+
+      // Settings modal open: stop here so filter hotkeys and pagination keys
+      // can't act on the page behind the dialog (focus can sit on a modal
+      // button, which isTyping doesn't catch).
+      if (settingsModal) return;
 
       // Double-tap V: Open Vine Tools (only when NOT typing)
       if (!isTyping && e.key === 'v' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {

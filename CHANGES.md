@@ -1,5 +1,22 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.0 - Full-Script Audit: Sync, Infinite Scroll, Modal & AI Panel Fixes
+
+- **Fix**: Cloud sync could silently create a **duplicate private gist** for users with more than ~30 gists — the gist lookup only read the first API page, so the existing sync gist was never found on a new device. All three sync paths (price cache, saved searches, keywords) now share one paginated find-or-create helper.
+- **Fix**: Saved-search and keyword sync no longer diverge timestamps after a merge. Both sides now land on the same timestamp, so the next sync is a no-op instead of endlessly re-pulling/re-pushing.
+- **Fix**: Saved-search sync no longer throws on malformed/legacy entries missing a `term` — entries are normalized defensively before merging (matching the keyword-sync behavior).
+- **Fix**: Filter hotkeys (1/4/5/6) and arrow-key pagination no longer fire against the page while the Vine Tools modal is open with focus on a button or tab.
+- **Fix**: The AI Review Generator panel can be reopened after closing — the close button (and Escape) now leaves a "🤖 AI Review Generator" button in its place. Previously a closed panel was gone until a full page reload.
+- **Fix**: Mutation-observer debounce could double-run item processing when two DOM batches landed in the same animation frame; both pending stages are now cancelled before rescheduling.
+- **Fix**: Infinite scroll's 503 retry no longer re-appends pages after the feature has been disabled, no longer burns a slot in the no-scroll chain cap on a failed attempt, and re-enabling infinite scroll after "End of results" no longer leaves a duplicate sentinel.
+- **Fix**: The settings modal's focus trap skips controls inside hidden tabs, so Tab/Shift-Tab no longer lands on invisible elements.
+- **Fix**: Threshold format migration in the settings modal now refreshes the in-memory thresholds immediately instead of waiting for a Save.
+- **Fix**: An empty AI-provider response now surfaces a clear "returned no review content" error instead of an unhelpful TypeError.
+- **Security**: API keys and the GitHub token are no longer interpolated into the settings modal's `innerHTML` — they're assigned as DOM properties after the markup is built, so a corrupted stored value can't break out of an attribute.
+- **Performance**: Infinite-scroll tiles are appended via a single `DocumentFragment` (one layout pass instead of one per tile).
+- **Performance**: Adding a duplicate keyword now shows a notice and skips the full grid re-filter + background gist sync it used to trigger.
+- **Enhancement**: Extracted a shared two-step confirm helper for the delete-search and clear-cache buttons; replaced deprecated `keypress` handlers with `keydown`; provider API-key/model lookups now use a config table instead of nested ternaries.
+
 ## Version 1.45.1 - Fix Approx-Price Tiles Never Marking Seen
 
 - **Fix**: Multi-variant tiles that get a `~$` approximate price (Amazon substituted a different variant on fetch) never persisted their "seen" status, so "Hide Seen" could never dismiss them — they reappeared on every reload even after being shown. The tile's price is still always refetched fresh (an unreliable price is never served from cache), but its seen/dismissed state now carries over across reloads like any other item.
