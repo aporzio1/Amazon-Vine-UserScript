@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.45.1 - Fix Approx-Price Tiles Never Marking Seen
+
+- **Fix**: Multi-variant tiles that get a `~$` approximate price (Amazon substituted a different variant on fetch) never persisted their "seen" status, so "Hide Seen" could never dismiss them — they reappeared on every reload even after being shown. The tile's price is still always refetched fresh (an unreliable price is never served from cache), but its seen/dismissed state now carries over across reloads like any other item.
+
 ## Version 1.43.0 - Multi-Variant Price Fix, Keywords, Sort, Infinite Scroll & More
 
 - **Fix (major)**: Multi-variation listings no longer show the wrong price. A parent-ASIN tile (e.g. a $16.99 accessory merged into a $299.99 listing) used to display the default child's buybox price. The script now reads `data-is-parent-asin` / `data-recommendation-id` from the tile, asks the Vine recommendations API which variations are actually offered, and shows their exact ETV when the API reports it — or a price range probed from the offered children's pages otherwise. Ranges display as `$a–$b` with a 🔀 indicator and are color-coded by the lowest price.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.45.0
+// @version      1.45.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -490,6 +490,7 @@
       if (extra.isParent) entry.isParent = true;
       if (extra.isEtv) entry.isEtv = true;
       if (extra.noPrice) entry.noPrice = true;
+      if (extra.approx) entry.approx = true;
     }
     // Add to pending updates
     pendingCacheUpdates.set(asin, entry);
@@ -1059,6 +1060,10 @@
           item.style.display = '';
           item.dataset.vineHidden = 'false';
 
+          // Approx (wrong-variant) tiles are excluded here — this write doesn't
+          // tag the entry as approx, and doing so would let a stale/possibly-wrong
+          // price get served directly on a future load. Their isSeen is instead
+          // persisted (with the approx tag) at fetch time in processBatch.
           if (!isSeen && item.dataset.vineSeenPersisted !== 'true' && item.dataset.vineApprox !== 'true') {
             const asin = item.dataset.vineAsin;
             const price = parseFloat(item.dataset.vinePrice);
@@ -1141,7 +1146,12 @@
           // Entries cached before parent detection existed hold the parent
           // page's default-child price (the wrong product) — refetch them.
           const staleParentEntry = isParent && cached && !cached.isParent;
-          if (cached && !staleParentEntry && cached.price !== undefined && cached.price !== null) {
+          // Approx (wrong-variant) entries are never served directly — the
+          // price could be for the wrong product — but we still remember
+          // whether the user already saw this tile so it doesn't come back
+          // every reload just because we have to refetch its price.
+          const staleApproxEntry = !!(cached && cached.approx === true);
+          if (cached && !staleParentEntry && !staleApproxEntry && cached.price !== undefined && cached.price !== null) {
             item.dataset.vineIsCached = 'true';
             item.dataset.vinePrice = cached.price;
             if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
@@ -1158,17 +1168,18 @@
             attachExternalLinks(badge, asin, getTileTitle(item));
             item.appendChild(badge);
             applyColorFilter(item, color);
-          } else if (cached && !staleParentEntry && cached.noPrice) {
+          } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
             // Recently confirmed to have no price — skip the fetch and mirror
             // the live-failure behavior (pre-release tiles get hidden).
             item.dataset.vineNoPrice = 'true';
             if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
-            uncachedItems.push({ item, asin, url, isParent, recId });
+            const priorIsSeen = staleApproxEntry ? !!cached.isSeen : false;
+            uncachedItems.push({ item, asin, url, isParent, recId, priorIsSeen });
           }
         });
 
-        uncachedItems.forEach(({ item, asin, url, isParent, recId }) => {
+        uncachedItems.forEach(({ item, asin, url, isParent, recId, priorIsSeen }) => {
           const fetchId = `${asin}-${Date.now()}`;
           activeFetches.set(asin, fetchId);
 
@@ -1188,17 +1199,22 @@
               getColorFilter((filter) => {
                 const isVisible = filter[color];
 
-                // Cache reliable prices; approx (wrong-variant) prices would poison it
-                if (!priceData.approx) {
-                  setCachedPrice(asin, priceData.price, isVisible, {
-                    priceMax: priceData.priceMax,
-                    isParent,
-                    isEtv: priceData.isEtv
-                  });
-                }
+                // Always persist isSeen so "Hide Seen" keeps working across
+                // reloads. Approx (wrong-variant) prices are tagged so the
+                // read path above never trusts the cached price itself —
+                // only the isSeen flag is reused; the price is refetched
+                // fresh every time.
+                setCachedPrice(asin, priceData.price, isVisible, {
+                  priceMax: priceData.priceMax,
+                  isParent,
+                  isEtv: priceData.isEtv,
+                  approx: priceData.approx || undefined
+                });
 
-                // Mark dataset as NOT SEEN locally (so it doesn't vanish instantly)
-                item.dataset.vineSeen = 'false';
+                // Carry forward whether this tile was already marked seen in
+                // a prior session (relevant for approx tiles, which always
+                // land here since their price can't be served from cache).
+                item.dataset.vineSeen = priorIsSeen ? 'true' : 'false';
               });
 
               const badge = createPriceBadge(priceData, false, false, color);
