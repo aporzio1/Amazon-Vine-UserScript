@@ -1,8 +1,8 @@
 # Amazon Vine Price Display - Change Log
 
-## Version 1.46.1 - Fix: Requesting an Item Failed While the Script Was Enabled
+## Version 1.46.1 - Scope Tile Lookups to the Items Grid
 
-- **Fix (major)**: Requesting an item could fail with a `SyntaxError` thrown inside Amazon's own bundle. When Amazon opened its request/order confirmation popover, it cloned the item tile — including its `data-recommendation-id` — into an overlay appended to `<body>`. The whole-document tile lookup matched that clone and injected the price badge / `data-vine-*` attributes into Amazon's order DOM, corrupting the selector Amazon builds when submitting the request. Tile lookups (`findVineItems`, `processVineItems`) are now scoped to the items grid, which never contains the popover, so the clone is left untouched.
+- **Hardening**: Tile lookups (`findVineItems`, `processVineItems`) are now scoped to the items grid instead of the whole document, so tiles Amazon clones into overlays/popovers (appended to `<body>`) are never picked up and processed. Falls back to a document-wide query on Vine layouts that have no grid. (Note: this was initially believed to fix an item-request failure; it does not — that bug is a 403 on Amazon's order API and remains under investigation.)
 
 ## Version 1.46.0 - Full-Script Audit: Sync, Infinite Scroll, Modal & AI Panel Fixes
 
