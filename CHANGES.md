@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.4 - TEMPORARY Diagnostic Build (bisection B)
+
+- **Diagnostic (temporary)**: Active half stays off (ruled out in A); price badges (`processVineItems`) now also disabled; UI panels kept. Isolates whether injecting badges into Amazon's tiles triggers the item-request 403. Not a release; will be reverted.
+
 ## Version 1.46.3 - TEMPORARY Diagnostic Build (bisection A)
 
 - **Diagnostic (temporary)**: Passive display half (price badges, settings/filter/review UI) runs; active half (whole-body MutationObserver, infinite scroll, window keyboard hook, GitHub auto-sync) is disabled. Isolates which half of `init()` triggers the item-request 403. Not a release; will be reverted.

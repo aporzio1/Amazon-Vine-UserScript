@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.3
+// @version      1.46.4
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4487,11 +4487,13 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A) — remove after testing. =====
-    // Passive display half stays ON; active half (observer, infinite scroll,
-    // keyboard hook, GitHub sync) is OFF. Isolates which half triggers the 403.
+    // ===== TEMP BISECTION TEST (Build B) — remove after testing. =====
+    // Active half OFF (ruled out in A). Now also disable the price badges
+    // (processVineItems) but keep the UI panels, to see if badge injection
+    // into Amazon's tiles is what triggers the 403.
     const TEST_DISABLE_ACTIVE = true;
-    console.log('[Vine] BISECTION Build A: active half disabled');
+    const TEST_DISABLE_DISPLAY = true;
+    console.log('[Vine] BISECTION Build B: active half + price badges disabled, UI panels on');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
@@ -4502,7 +4504,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       getThresholds(() => { });
       getHideCached(() => { });
       getColorFilter(() => { });
-      processVineItems(true);
+      if (!TEST_DISABLE_DISPLAY) processVineItems(true);
 
       // Auto-sync if a GitHub token is configured. Cache-expiry cleanup is deferred in getCache.
       // Throttled to at most once per SYNC_MIN_INTERVAL across page loads/tabs
