@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.0
+// @version      1.46.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1315,9 +1315,21 @@
     }, 1000);
   }
 
+  // Scope every tile lookup to the items grid. Amazon clones a tile (with its
+  // `data-recommendation-id`) into the request/order popover it appends to
+  // <body>; a document-wide query would match that clone and inject our badge
+  // into Amazon's order DOM, breaking the submit selector. The grid never
+  // contains the popover, so scoping to it excludes the clone regardless of
+  // the popover's class. Falls back to document-wide on Vine layouts that
+  // have no grid (which also never render the request popover).
+  function vineItemsRoot() {
+    return document.querySelector('.vvp-items-grid, #vvp-items-grid') || document;
+  }
+
   function findVineItems() {
+    const root = vineItemsRoot();
     for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
-      const found = document.querySelectorAll(selector);
+      const found = root.querySelectorAll(selector);
       if (found.length > 0) return Array.from(found);
     }
     return [];
@@ -1520,9 +1532,11 @@
 
   function processVineItems(isInitialLoad = false) {
     let items = [];
+    // Grid-scoped so the request/order popover clone is never processed — see vineItemsRoot().
+    const root = vineItemsRoot();
 
     if (cachedSelector) {
-      const found = document.querySelectorAll(cachedSelector);
+      const found = root.querySelectorAll(cachedSelector);
       if (found.length > 0) {
         items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
       } else {
@@ -1532,7 +1546,7 @@
 
     if (items.length === 0) {
       for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
-        const found = document.querySelectorAll(selector);
+        const found = root.querySelectorAll(selector);
         if (found.length > 0) {
           items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
           cachedSelector = selector;

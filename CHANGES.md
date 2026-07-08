@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.1 - Fix: Requesting an Item Failed While the Script Was Enabled
+
+- **Fix (major)**: Requesting an item could fail with a `SyntaxError` thrown inside Amazon's own bundle. When Amazon opened its request/order confirmation popover, it cloned the item tile — including its `data-recommendation-id` — into an overlay appended to `<body>`. The whole-document tile lookup matched that clone and injected the price badge / `data-vine-*` attributes into Amazon's order DOM, corrupting the selector Amazon builds when submitting the request. Tile lookups (`findVineItems`, `processVineItems`) are now scoped to the items grid, which never contains the popover, so the clone is left untouched.
+
 ## Version 1.46.0 - Full-Script Audit: Sync, Infinite Scroll, Modal & AI Panel Fixes
 
 - **Fix**: Cloud sync could silently create a **duplicate private gist** for users with more than ~30 gists — the gist lookup only read the first API page, so the existing sync gist was never found on a new device. All three sync paths (price cache, saved searches, keywords) now share one paginated find-or-create helper.
