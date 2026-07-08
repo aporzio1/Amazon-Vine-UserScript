@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.2
+// @version      1.46.3
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4487,10 +4487,12 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP ISOLATION TEST — do-nothing build. Remove this block after testing. =====
-    console.log('[Vine] KILL-SWITCH active: script loaded but doing nothing');
-    return;
-    // ====================================================================================
+    // ===== TEMP BISECTION TEST (Build A) — remove after testing. =====
+    // Passive display half stays ON; active half (observer, infinite scroll,
+    // keyboard hook, GitHub sync) is OFF. Isolates which half triggers the 403.
+    const TEST_DISABLE_ACTIVE = true;
+    console.log('[Vine] BISECTION Build A: active half disabled');
+    // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
       window.location.hostname.includes('vine.amazon.com');
@@ -4508,7 +4510,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const syncFreshEnough = () =>
         (Date.now() - (getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0)) < CONFIG.SYNC_MIN_INTERVAL;
-      if (githubToken && !syncFreshEnough()) {
+      if (!TEST_DISABLE_ACTIVE && githubToken && !syncFreshEnough()) {
         // Jitter so multiple open tabs don't all sync at once.
         setTimeout(() => {
           if (syncFreshEnough()) {
@@ -4528,11 +4530,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         }, 2000 + Math.random() * 3000);
       }
 
-      observePageChanges();
+      if (!TEST_DISABLE_ACTIVE) observePageChanges();
       createSettingsUI();
       if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
         createColorFilterUI();
-        setupInfiniteScroll();
+        if (!TEST_DISABLE_ACTIVE) setupInfiniteScroll();
       }
     }
 
@@ -4540,7 +4542,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     createReviewGeneratorUI();
 
     // Add keyboard navigation for pagination
-    setupKeyboardNavigation();
+    if (!TEST_DISABLE_ACTIVE) setupKeyboardNavigation();
 
     console.log('Amazon Vine Price Display userscript loaded');
   }

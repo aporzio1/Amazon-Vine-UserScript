@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.3 - TEMPORARY Diagnostic Build (bisection A)
+
+- **Diagnostic (temporary)**: Passive display half (price badges, settings/filter/review UI) runs; active half (whole-body MutationObserver, infinite scroll, window keyboard hook, GitHub auto-sync) is disabled. Isolates which half of `init()` triggers the item-request 403. Not a release; will be reverted.
+
 ## Version 1.46.2 - TEMPORARY Diagnostic Build (do-nothing)
 
 - **Diagnostic (temporary)**: `init()` returns immediately, so the script loads but performs no work — no price fetching, badges, UI, observers, or key handlers. This is an isolation test for an item-request 403 (Amazon anti-bot block) that occurs while the script is enabled; it is not a release and will be reverted once the trigger is identified.
