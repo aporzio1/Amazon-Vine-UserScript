@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.2 - TEMPORARY Diagnostic Build (do-nothing)
+
+- **Diagnostic (temporary)**: `init()` returns immediately, so the script loads but performs no work — no price fetching, badges, UI, observers, or key handlers. This is an isolation test for an item-request 403 (Amazon anti-bot block) that occurs while the script is enabled; it is not a release and will be reverted once the trigger is identified.
+
 ## Version 1.46.1 - Scope Tile Lookups to the Items Grid
 
 - **Hardening**: Tile lookups (`findVineItems`, `processVineItems`) are now scoped to the items grid instead of the whole document, so tiles Amazon clones into overlays/popovers (appended to `<body>`) are never picked up and processed. Falls back to a document-wide query on Vine layouts that have no grid. (Note: this was initially believed to fix an item-request failure; it does not — that bug is a 403 on Amazon's order API and remains under investigation.)

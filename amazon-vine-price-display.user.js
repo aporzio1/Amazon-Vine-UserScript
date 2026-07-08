@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.1
+// @version      1.46.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4487,6 +4487,10 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
+    // ===== TEMP ISOLATION TEST — do-nothing build. Remove this block after testing. =====
+    console.log('[Vine] KILL-SWITCH active: script loaded but doing nothing');
+    return;
+    // ====================================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
       window.location.hostname.includes('vine.amazon.com');
