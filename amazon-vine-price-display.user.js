@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.4
+// @version      1.46.5
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -26,6 +26,13 @@
   'use strict';
 
 
+
+  // ===== TEMP BISECTION FLAGS (Build C) — remove after testing. =====
+  // Isolating the item-request 403. Badges ON, but the badge NODE injection
+  // into Amazon's tiles (appendChild + external links) is skipped; dataset
+  // writes and the color-filter/hide logic still run.
+  const TEST = { disableActive: true, disableDisplay: false, noBadgeNode: true };
+  // ===================================================================
 
   // Configuration constants
   const CONFIG = {
@@ -1191,8 +1198,10 @@
               { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
               true, isSeen, color
             );
-            attachExternalLinks(badge, asin, getTileTitle(item));
-            item.appendChild(badge);
+            if (!TEST.noBadgeNode) {
+              attachExternalLinks(badge, asin, getTileTitle(item));
+              item.appendChild(badge);
+            }
             applyColorFilter(item, color);
           } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
             // Recently confirmed to have no price — skip the fetch and mirror
@@ -1244,8 +1253,10 @@
               });
 
               const badge = createPriceBadge(priceData, false, false, color);
-              attachExternalLinks(badge, asin, getTileTitle(item));
-              item.appendChild(badge);
+              if (!TEST.noBadgeNode) {
+                attachExternalLinks(badge, asin, getTileTitle(item));
+                item.appendChild(badge);
+              }
               applyColorFilter(item, color);
               scheduleSortRefresh();
             } else {
@@ -4487,13 +4498,10 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build B) — remove after testing. =====
-    // Active half OFF (ruled out in A). Now also disable the price badges
-    // (processVineItems) but keep the UI panels, to see if badge injection
-    // into Amazon's tiles is what triggers the 403.
-    const TEST_DISABLE_ACTIVE = true;
-    const TEST_DISABLE_DISPLAY = true;
-    console.log('[Vine] BISECTION Build B: active half + price badges disabled, UI panels on');
+    // ===== TEMP BISECTION TEST (Build C) — remove after testing. =====
+    const TEST_DISABLE_ACTIVE = TEST.disableActive;
+    const TEST_DISABLE_DISPLAY = TEST.disableDisplay;
+    console.log('[Vine] BISECTION Build C: badges on, badge-node injection skipped (dataset+filter only)');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||

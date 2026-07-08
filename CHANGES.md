@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.5 - TEMPORARY Diagnostic Build (bisection C)
+
+- **Diagnostic (temporary)**: Badges re-enabled, but the badge NODE injection into Amazon's tiles (`appendChild` + external links) is skipped; only `data-vine-*` writes and the color-filter/hide logic run. Isolates whether appending a child node to Amazon's tile (vs. attribute/style changes) triggers the item-request 403. Not a release; will be reverted.
+
 ## Version 1.46.4 - TEMPORARY Diagnostic Build (bisection B)
 
 - **Diagnostic (temporary)**: Active half stays off (ruled out in A); price badges (`processVineItems`) now also disabled; UI panels kept. Isolates whether injecting badges into Amazon's tiles triggers the item-request 403. Not a release; will be reverted.
