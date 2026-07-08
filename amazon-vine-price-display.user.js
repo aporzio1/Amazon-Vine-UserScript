@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.5
+// @version      1.46.6
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -31,7 +31,7 @@
   // Isolating the item-request 403. Badges ON, but the badge NODE injection
   // into Amazon's tiles (appendChild + external links) is skipped; dataset
   // writes and the color-filter/hide logic still run.
-  const TEST = { disableActive: true, disableDisplay: false, noBadgeNode: true };
+  const TEST = { disableActive: true, disableDisplay: false, noBadgeNode: true, noColorFilter: true };
   // ===================================================================
 
   // Configuration constants
@@ -1081,6 +1081,7 @@
   // to seen=true once, for the next session — guarded by vineSeenPersisted so we don't re-write
   // the cache every time the filter re-applies.
   function applyColorFilter(item, color) {
+    if (TEST.noColorFilter) return; // TEMP bisection D — skip all hide/style/class changes
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
         const isSeen = item.dataset.vineSeen === 'true';
@@ -4501,7 +4502,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     // ===== TEMP BISECTION TEST (Build C) — remove after testing. =====
     const TEST_DISABLE_ACTIVE = TEST.disableActive;
     const TEST_DISABLE_DISPLAY = TEST.disableDisplay;
-    console.log('[Vine] BISECTION Build C: badges on, badge-node injection skipped (dataset+filter only)');
+    console.log('[Vine] BISECTION Build D: dataset writes only; badge-node + color-filter/hide skipped');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
