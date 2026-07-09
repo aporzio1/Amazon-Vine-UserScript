@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.7
+// @version      1.46.8
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4499,10 +4499,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP ISOLATION TEST (re-run of Build do-nothing) — remove after testing. =====
-    console.log('[Vine] KILL-SWITCH active (re-test): script loaded but doing nothing');
-    return;
-    // =====================================================================================
+    // ===== TEMP BISECTION TEST (re-run of Build B) — remove after testing. =====
+    // Active half OFF, price badges OFF, UI panels ON. Re-testing with a fresh
+    // session/cooldown per Fable's advice — prior B/C/D reads may have been
+    // contaminated by a sticky WAF flag rather than clean per-build signal.
+    const TEST_DISABLE_ACTIVE = true;
+    const TEST_DISABLE_DISPLAY = true;
+    console.log('[Vine] BISECTION Build B retest: active half + price badges disabled, UI panels on');
+    // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
       window.location.hostname.includes('vine.amazon.com');

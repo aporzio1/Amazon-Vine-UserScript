@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.8 - TEMPORARY Diagnostic Build (re-test bisection B)
+
+- **Diagnostic (temporary)**: Re-run of Build B (active half off, price badges off, UI panels on) with a fresh session/cooldown before this test. Prior A–D bisection reads may have been contaminated by a sticky Amazon WAF flag persisting across build swaps rather than reflecting each build's own behavior — a clean B retest settles whether the trigger is in the standalone UI panels (`createColorFilterUI`'s grid-insertion fallback is the leading suspect) or whether the earlier bisection chain needs to restart from Build A. Not a release; will be reverted.
+
 ## Version 1.46.7 - TEMPORARY Diagnostic Build (re-test do-nothing control)
 
 - **Diagnostic (temporary)**: Re-run of the v1.46.2 do-nothing control — `init()` returns immediately, script performs no work at all. D (dataset-writes-only) still showed the item-request 403, so re-confirming the baseline control before concluding the trigger is outside the script entirely. Not a release; will be reverted.
