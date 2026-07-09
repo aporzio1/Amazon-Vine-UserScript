@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.7 - TEMPORARY Diagnostic Build (re-test do-nothing control)
+
+- **Diagnostic (temporary)**: Re-run of the v1.46.2 do-nothing control — `init()` returns immediately, script performs no work at all. D (dataset-writes-only) still showed the item-request 403, so re-confirming the baseline control before concluding the trigger is outside the script entirely. Not a release; will be reverted.
+
 ## Version 1.46.6 - TEMPORARY Diagnostic Build (bisection D)
 
 - **Diagnostic (temporary)**: Only `data-vine-*` attribute writes run on Amazon's tiles; badge-node injection and the color-filter/hide logic (`display:none`, class toggles) are both skipped. Isolates whether the attribute writes vs. the hide/style changes trigger the item-request 403. Not a release; will be reverted.
