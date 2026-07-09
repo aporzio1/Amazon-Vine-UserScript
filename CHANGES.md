@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.9 - TEMPORARY Diagnostic Build (bisection B2)
+
+- **Diagnostic (temporary)**: Clean retest of Build B (v1.46.8, fresh session) showed no 403 with active half off + price badges off + UI panels on. This build keeps the active half off but re-enables `processVineItems` in full (badges, dataset writes, hide/style logic all restored) to test whether touching Amazon's tiles at all reproduces the 403, under the same clean-session protocol. Not a release; will be reverted.
+
 ## Version 1.46.8 - TEMPORARY Diagnostic Build (re-test bisection B)
 
 - **Diagnostic (temporary)**: Re-run of Build B (active half off, price badges off, UI panels on) with a fresh session/cooldown before this test. Prior A–D bisection reads may have been contaminated by a sticky Amazon WAF flag persisting across build swaps rather than reflecting each build's own behavior — a clean B retest settles whether the trigger is in the standalone UI panels (`createColorFilterUI`'s grid-insertion fallback is the leading suspect) or whether the earlier bisection chain needs to restart from Build A. Not a release; will be reverted.
