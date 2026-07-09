@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.10 - TEMPORARY Diagnostic Build (bisection A2)
+
+- **Diagnostic (temporary)**: Clean retest of B2 (v1.46.9) showed no 403 with badges/dataset writes/hide-style + UI panels all on, active half still off. This re-enables the active half (whole-body MutationObserver, infinite scroll, window keydown hook, GitHub auto-sync) — the only piece left off — everything else stays on. Confirms whether the active half is the trigger, tested under the clean-session protocol. Not a release; will be reverted.
+
 ## Version 1.46.9 - TEMPORARY Diagnostic Build (bisection B2)
 
 - **Diagnostic (temporary)**: Clean retest of Build B (v1.46.8, fresh session) showed no 403 with active half off + price badges off + UI panels on. This build keeps the active half off but re-enables `processVineItems` in full (badges, dataset writes, hide/style logic all restored) to test whether touching Amazon's tiles at all reproduces the 403, under the same clean-session protocol. Not a release; will be reverted.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.9
+// @version      1.46.10
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4499,14 +4499,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build B2) — remove after testing. =====
-    // Active half still OFF (clean B retest passed: no 403). Now re-enabling
-    // processVineItems (full badges + dataset writes + hide/style) to see if
-    // touching Amazon's tiles at all triggers the 403, tested with a clean
-    // session this time.
-    const TEST_DISABLE_ACTIVE = true;
+    // ===== TEMP BISECTION TEST (Build A2) — remove after testing. =====
+    // B2 retest passed clean too (badges/dataset/hide-style + UI panels all
+    // ruled out under clean-session protocol). Re-enabling the active half
+    // (MutationObserver, infinite scroll, keyboard hook, GitHub auto-sync) —
+    // the only thing left off — to confirm it's the trigger, tested clean.
+    const TEST_DISABLE_ACTIVE = false;
     const TEST_DISABLE_DISPLAY = false;
-    console.log('[Vine] BISECTION Build B2: active half disabled, price badges (full) re-enabled');
+    console.log('[Vine] BISECTION Build A2: active half re-enabled (everything on)');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
