@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.11 - TEMPORARY Diagnostic Build (bisection A3)
+
+- **Diagnostic (temporary)**: A2 (v1.46.10) confirmed the active half is the 403 trigger under the clean-session protocol. This splits the active half in two: whole-body `MutationObserver` (`observePageChanges`) + infinite scroll are disabled; GitHub auto-sync + the window keydown hook stay on. Isolates whether repeated tile reprocessing/network activity (observer+scroll) or the low-DOM-touch pair (sync+keydown) is the trigger. Not a release; will be reverted.
+
 ## Version 1.46.10 - TEMPORARY Diagnostic Build (bisection A2)
 
 - **Diagnostic (temporary)**: Clean retest of B2 (v1.46.9) showed no 403 with badges/dataset writes/hide-style + UI panels all on, active half still off. This re-enables the active half (whole-body MutationObserver, infinite scroll, window keydown hook, GitHub auto-sync) — the only piece left off — everything else stays on. Confirms whether the active half is the trigger, tested under the clean-session protocol. Not a release; will be reverted.

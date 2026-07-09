@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.10
+// @version      1.46.11
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4499,14 +4499,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A2) — remove after testing. =====
-    // B2 retest passed clean too (badges/dataset/hide-style + UI panels all
-    // ruled out under clean-session protocol). Re-enabling the active half
-    // (MutationObserver, infinite scroll, keyboard hook, GitHub auto-sync) —
-    // the only thing left off — to confirm it's the trigger, tested clean.
-    const TEST_DISABLE_ACTIVE = false;
+    // ===== TEMP BISECTION TEST (Build A3) — remove after testing. =====
+    // A2 confirmed the active half is the trigger (403 fired, clean session).
+    // Splitting the active half in two: MutationObserver + infinite scroll
+    // (repeated tile processing / network) OFF; GitHub auto-sync + keydown
+    // hook (barely touch the page) stay ON.
     const TEST_DISABLE_DISPLAY = false;
-    console.log('[Vine] BISECTION Build A2: active half re-enabled (everything on)');
+    const TEST_DISABLE_OBSERVER_SCROLL = true;
+    const TEST_DISABLE_SYNC_KEYS = false;
+    console.log('[Vine] BISECTION Build A3: observer+infinite-scroll off, sync+keydown on');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
@@ -4525,7 +4526,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const syncFreshEnough = () =>
         (Date.now() - (getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0)) < CONFIG.SYNC_MIN_INTERVAL;
-      if (!TEST_DISABLE_ACTIVE && githubToken && !syncFreshEnough()) {
+      if (!TEST_DISABLE_SYNC_KEYS && githubToken && !syncFreshEnough()) {
         // Jitter so multiple open tabs don't all sync at once.
         setTimeout(() => {
           if (syncFreshEnough()) {
@@ -4545,11 +4546,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         }, 2000 + Math.random() * 3000);
       }
 
-      if (!TEST_DISABLE_ACTIVE) observePageChanges();
+      if (!TEST_DISABLE_OBSERVER_SCROLL) observePageChanges();
       createSettingsUI();
       if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
         createColorFilterUI();
-        if (!TEST_DISABLE_ACTIVE) setupInfiniteScroll();
+        if (!TEST_DISABLE_OBSERVER_SCROLL) setupInfiniteScroll();
       }
     }
 
@@ -4557,7 +4558,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     createReviewGeneratorUI();
 
     // Add keyboard navigation for pagination
-    if (!TEST_DISABLE_ACTIVE) setupKeyboardNavigation();
+    if (!TEST_DISABLE_SYNC_KEYS) setupKeyboardNavigation();
 
     console.log('Amazon Vine Price Display userscript loaded');
   }
