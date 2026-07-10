@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.11
+// @version      1.46.12
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4499,15 +4499,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A3) — remove after testing. =====
-    // A2 confirmed the active half is the trigger (403 fired, clean session).
-    // Splitting the active half in two: MutationObserver + infinite scroll
-    // (repeated tile processing / network) OFF; GitHub auto-sync + keydown
-    // hook (barely touch the page) stay ON.
+    // ===== TEMP BISECTION TEST (Build A4) — remove after testing. =====
+    // A3 passed clean (sync+keydown ruled out). Trigger is MutationObserver
+    // or infinite scroll. This build: MutationObserver ON, infinite scroll OFF.
     const TEST_DISABLE_DISPLAY = false;
-    const TEST_DISABLE_OBSERVER_SCROLL = true;
+    const TEST_DISABLE_OBSERVER = false;
+    const TEST_DISABLE_SCROLL = true;
     const TEST_DISABLE_SYNC_KEYS = false;
-    console.log('[Vine] BISECTION Build A3: observer+infinite-scroll off, sync+keydown on');
+    console.log('[Vine] BISECTION Build A4: MutationObserver on, infinite scroll off');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
@@ -4546,11 +4545,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         }, 2000 + Math.random() * 3000);
       }
 
-      if (!TEST_DISABLE_OBSERVER_SCROLL) observePageChanges();
+      if (!TEST_DISABLE_OBSERVER) observePageChanges();
       createSettingsUI();
       if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
         createColorFilterUI();
-        if (!TEST_DISABLE_OBSERVER_SCROLL) setupInfiniteScroll();
+        if (!TEST_DISABLE_SCROLL) setupInfiniteScroll();
       }
     }
 

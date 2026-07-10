@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.12 - TEMPORARY Diagnostic Build (bisection A4)
+
+- **Diagnostic (temporary)**: A3 (v1.46.11) passed clean, ruling out GitHub auto-sync + keydown hook. This build isolates the remaining pair: whole-body `MutationObserver` (`observePageChanges`) stays ON, infinite scroll (`setupInfiniteScroll`) is OFF. Not a release; will be reverted.
+
 ## Version 1.46.11 - TEMPORARY Diagnostic Build (bisection A3)
 
 - **Diagnostic (temporary)**: A2 (v1.46.10) confirmed the active half is the 403 trigger under the clean-session protocol. This splits the active half in two: whole-body `MutationObserver` (`observePageChanges`) + infinite scroll are disabled; GitHub auto-sync + the window keydown hook stay on. Isolates whether repeated tile reprocessing/network activity (observer+scroll) or the low-DOM-touch pair (sync+keydown) is the trigger. Not a release; will be reverted.
