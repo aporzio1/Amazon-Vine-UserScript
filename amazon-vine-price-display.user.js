@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.13
+// @version      1.46.14
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1164,9 +1164,13 @@
     const needsPositioning = itemData.length > 0 && getComputedStyle(itemData[0].item).position === 'static';
 
     itemData.forEach(({ item }) => {
-      if (needsPositioning) {
+      // ===== TEMP BISECTION TEST (Build A6) — remove after testing. =====
+      // Skip the style.position write only on reactive (mutation-triggered)
+      // calls; it already ran safely at init in prior builds.
+      if (needsPositioning && isInitialLoad) {
         item.style.position = 'relative';
       }
+      // ====================================================================
       item.dataset.vinePriceProcessed = 'true';
     });
 
@@ -1613,16 +1617,6 @@
       });
 
       if (!hasRelevantChanges) return;
-
-      // ===== TEMP BISECTION TEST (Build A5) — remove after testing. =====
-      // A4 confirmed MutationObserver is the trigger. Isolating further:
-      // observer stays attached and watching document.body subtree, but the
-      // reactive processVineItems(false) callback is skipped (log only).
-      if (window.__vineTestObserverNoop) {
-        console.log('[Vine] BISECTION Build A5: relevant mutation seen, reactive processVineItems skipped');
-        return;
-      }
-      // ====================================================================
 
       // Cancel BOTH pending stages: a stale rAF from an earlier batch would
       // otherwise queue a second timeout and double-run processVineItems.
@@ -4509,16 +4503,19 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A5) — remove after testing. =====
-    // A4 confirmed MutationObserver is the trigger. Observer stays attached
-    // and watching document.body subtree, but its reactive processVineItems
-    // callback is now a no-op (see window.__vineTestObserverNoop below).
+    // ===== TEMP BISECTION TEST (Build A6) — remove after testing. =====
+    // A5 confirmed the reactive processVineItems(false) call is the trigger.
+    // Found: module-level TEST object (line 34, leftover from Build C) has
+    // been unconditionally suppressing badge nodes + color-filter/hide logic
+    // in every build since — those were never actually re-tested. Only the
+    // style.position write (processBatch, unconditional, not gated by TEST)
+    // was a live untested candidate. This build re-enables the reactive call
+    // but skips style.position specifically when reactive (isInitialLoad=false).
     const TEST_DISABLE_DISPLAY = false;
     const TEST_DISABLE_OBSERVER = false;
     const TEST_DISABLE_SCROLL = true;
     const TEST_DISABLE_SYNC_KEYS = false;
-    window.__vineTestObserverNoop = true;
-    console.log('[Vine] BISECTION Build A5: MutationObserver attached, reactive processing skipped');
+    console.log('[Vine] BISECTION Build A6: reactive processing on, style.position write skipped when reactive');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||

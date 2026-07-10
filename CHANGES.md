@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.14 - TEMPORARY Diagnostic Build (bisection A6)
+
+- **Diagnostic (temporary)**: A5 (v1.46.13) confirmed the reactive `processVineItems(false)` call (triggered by the whole-body `MutationObserver`) is the 403 trigger. Correction to the bisection: a module-level `TEST` object (line 34, left over from Build C) has been unconditionally suppressing badge-node injection and color-filter/hide logic in every build since v1.46.5 — those paths were never actually re-tested in B2/A2/A3/A4/A5, so "badges/hide-style ruled out" did not hold. The one live, untested candidate still running unconditionally in `processBatch` was `item.style.position = 'relative'`. This build re-enables the reactive call but skips that style write specifically when triggered reactively (it already ran safely at init in prior builds). Not a release; will be reverted.
+
 ## Version 1.46.13 - TEMPORARY Diagnostic Build (bisection A5)
 
 - **Diagnostic (temporary)**: A4 (v1.46.12) confirmed the whole-body `MutationObserver` is the 403 trigger. This build keeps the observer attached and watching `document.body` subtree, but its reactive `processVineItems(false)` callback is now a no-op (logs only). Isolates whether the mere act of observing is enough, or whether it's specifically the reactive re-processing call — noting that direct `processVineItems(true)` at init was already cleared in Build B2. Not a release; will be reverted.
