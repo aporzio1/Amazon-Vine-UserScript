@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.18
+// @version      1.47.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -25,14 +25,6 @@
 (function () {
   'use strict';
 
-
-
-  // ===== TEMP BISECTION FLAGS (Build C) — remove after testing. =====
-  // Isolating the item-request 403. Badges ON, but the badge NODE injection
-  // into Amazon's tiles (appendChild + external links) is skipped; dataset
-  // writes and the color-filter/hide logic still run.
-  const TEST = { disableActive: true, disableDisplay: false, noBadgeNode: true, noColorFilter: true };
-  // ===================================================================
 
   // Configuration constants
   const CONFIG = {
@@ -68,7 +60,6 @@
     MAX_CACHE_SIZE: 50000,
     MAX_RETRIES: 3,
     RETRY_BASE_DELAY: 1000,
-    MUTATION_DEBOUNCE: 50,
     DEFAULT_THRESHOLDS: {
       GREEN_MIN: 90,
       YELLOW_MIN: 50,
@@ -1081,7 +1072,6 @@
   // to seen=true once, for the next session — guarded by vineSeenPersisted so we don't re-write
   // the cache every time the filter re-applies.
   function applyColorFilter(item, color) {
-    if (TEST.noColorFilter) return; // TEMP bisection D — skip all hide/style/class changes
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
         const isSeen = item.dataset.vineSeen === 'true';
@@ -1144,16 +1134,11 @@
       if (link) {
         try { origin = new URL(link.href, location.href).origin; } catch (e) { /* keep location.origin */ }
       }
-      // ===== TEMP BISECTION TEST (Build A8) — remove after testing. =====
-      // Skip these dataset writes on reactive (mutation-triggered) calls.
-      if (isInitialLoad) {
-        // Store ASIN on item immediately for consistency
-        item.dataset.vineAsin = asin;
-        if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
-          item.dataset.vineIsParent = 'true';
-        }
+      // Store ASIN on item immediately for consistency
+      item.dataset.vineAsin = asin;
+      if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
+        item.dataset.vineIsParent = 'true';
       }
-      // ====================================================================
       return {
         item,
         asin,
@@ -1169,16 +1154,10 @@
     const needsPositioning = itemData.length > 0 && getComputedStyle(itemData[0].item).position === 'static';
 
     itemData.forEach(({ item }) => {
-      // ===== TEMP BISECTION TEST (Build A6) — remove after testing. =====
-      // Skip the style.position write only on reactive (mutation-triggered)
-      // calls; it already ran safely at init in prior builds.
-      if (needsPositioning && isInitialLoad) {
+      if (needsPositioning) {
         item.style.position = 'relative';
       }
-      // ====================================================================
-      // ===== TEMP BISECTION TEST (Build A8) — skip on reactive calls. =====
-      if (isInitialLoad) item.dataset.vinePriceProcessed = 'true';
-      // ====================================================================
+      item.dataset.vinePriceProcessed = 'true';
     });
 
     const asins = itemData.map(data => data.asin);
@@ -1197,32 +1176,26 @@
           // every reload just because we have to refetch its price.
           const staleApproxEntry = !!(cached && cached.approx === true);
           if (cached && !staleParentEntry && !staleApproxEntry && cached.price !== undefined && cached.price !== null) {
-            // ===== TEMP BISECTION TEST (Build A8) — skip on reactive calls. =====
-            if (isInitialLoad) {
-              item.dataset.vineIsCached = 'true';
-              item.dataset.vinePrice = cached.price;
-              if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
-              if (cached.isEtv) item.dataset.vineIsEtv = 'true';
-            }
-            // ====================================================================
+            item.dataset.vineIsCached = 'true';
+            item.dataset.vinePrice = cached.price;
+            if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
+            if (cached.isEtv) item.dataset.vineIsEtv = 'true';
             // Default to true for legacy cache entries without isSeen property
             const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
-            if (isInitialLoad) item.dataset.vineSeen = String(isSeen);
+            item.dataset.vineSeen = String(isSeen);
 
             const color = getPriceColorSync(cached.price);
             const badge = createPriceBadge(
               { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
               true, isSeen, color
             );
-            if (!TEST.noBadgeNode) {
-              attachExternalLinks(badge, asin, getTileTitle(item));
-              item.appendChild(badge);
-            }
+            attachExternalLinks(badge, asin, getTileTitle(item));
+            item.appendChild(badge);
             applyColorFilter(item, color);
           } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
             // Recently confirmed to have no price — skip the fetch and mirror
             // the live-failure behavior (pre-release tiles get hidden).
-            if (isInitialLoad) item.dataset.vineNoPrice = 'true'; // Build A8: skip reactively
+            item.dataset.vineNoPrice = 'true';
             if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
             const priorIsSeen = staleApproxEntry ? !!cached.isSeen : false;
@@ -1230,14 +1203,7 @@
           }
         });
 
-        // ===== TEMP BISECTION TEST (Build A7) — remove after testing. =====
-        // Skip outbound fetches (fetchPrice / fetchParentPrices, including
-        // the /vine/api/recommendations/ call) entirely on reactive calls;
-        // dataset writes + cache reads above still run. Leading suspect:
-        // fetchParentPrices hits Amazon's own internal recommendations API,
-        // which may collide with Amazon's in-flight call for the same
-        // recId when the reactive run is triggered by the order popover.
-        (isInitialLoad ? uncachedItems : []).forEach(({ item, asin, url, isParent, recId, priorIsSeen }) => {
+        uncachedItems.forEach(({ item, asin, url, isParent, recId, priorIsSeen }) => {
           const fetchId = `${asin}-${Date.now()}`;
           activeFetches.set(asin, fetchId);
 
@@ -1276,10 +1242,8 @@
               });
 
               const badge = createPriceBadge(priceData, false, false, color);
-              if (!TEST.noBadgeNode) {
-                attachExternalLinks(badge, asin, getTileTitle(item));
-                item.appendChild(badge);
-              }
+              attachExternalLinks(badge, asin, getTileTitle(item));
+              item.appendChild(badge);
               applyColorFilter(item, color);
               scheduleSortRefresh();
             } else {
@@ -1375,7 +1339,6 @@
 
   // ---- Sort tiles by price ----
   let sortOrder = null; // 'none' | 'asc' | 'desc'
-  let isReordering = false;
   let sortRefreshTimeout = null;
 
   function getSortOrder() {
@@ -1402,11 +1365,8 @@
       return order === 'asc' ? va - vb : vb - va;
     });
 
-    // appendChild moves nodes (badges/listeners survive); flag the reorder so
-    // the MutationObserver doesn't burn a debounce cycle on our own mutations.
-    isReordering = true;
+    // appendChild moves nodes; badges/listeners survive the move.
     sorted.forEach(item => parent.appendChild(item));
-    setTimeout(() => { isReordering = false; }, 0);
   }
 
   // Debounced re-sort: prices arrive async, so the page settles into order
@@ -1521,12 +1481,14 @@
         if (asin) presentAsins.add(asin);
         appended.push(document.adoptNode(tile));
       });
-      // The MutationObserver routes these through processBatch (they lack
-      // vinePriceProcessed). Scripts parsed by DOMParser are inert.
-      // One fragment append = one layout + one observer batch.
+      // Scripts parsed by DOMParser are inert. One fragment append = one layout.
       const fragment = document.createDocumentFragment();
       appended.forEach(tile => fragment.appendChild(tile));
       grid.appendChild(fragment);
+      // Process the newly appended tiles directly — there is no MutationObserver
+      // watching the page anymore (see observePageChanges removal notes), so
+      // infinite scroll drives processing itself instead of relying on one.
+      if (appended.length > 0) processVineItems(false);
 
       // Advance pagination state from the FETCHED document — the live DOM
       // still points at the page we just consumed.
@@ -1592,76 +1554,16 @@
     if (items.length > 0) processBatch(items, isInitialLoad);
   }
 
-  // Mutation observer
-  let mutationObserver = null;
-  let processingTimeout = null;
-  let processingRaf = null;
-
-  function observePageChanges() {
-    if (mutationObserver) {
-      mutationObserver.disconnect();
-    }
-    if (processingRaf) {
-      cancelAnimationFrame(processingRaf);
-      processingRaf = null;
-    }
-    if (processingTimeout) {
-      clearTimeout(processingTimeout);
-    }
-
-    mutationObserver = new MutationObserver((mutations) => {
-      // Our own sort reorders fire childList mutations — skip them
-      if (isReordering) return;
-
-      // Filter mutations to only process relevant changes
-      const hasRelevantChanges = mutations.some(mutation => {
-        // Only process if nodes were added
-        if (mutation.addedNodes.length === 0) return false;
-
-        // Check if any added nodes or their children contain Vine items
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType === 1) { // Element node
-            if (node.classList && (
-              node.classList.contains('vvp-item-tile') ||
-              node.hasAttribute('data-recommendation-id') ||
-              node.querySelector('.vvp-item-tile') ||
-              node.querySelector('[data-recommendation-id]')
-            )) {
-              return true;
-            }
-          }
-        }
-        return false;
-      });
-
-      if (!hasRelevantChanges) return;
-
-      // ===== TEMP BISECTION TEST (Build A5, re-test against actual Request-
-      // product click) — remove after testing. Observer stays attached and
-      // watching document.body subtree, but the reactive processVineItems
-      // call is skipped entirely (log only). Previously read clean, but was
-      // never verified against clicking "Request product" specifically.
-      console.log('[Vine] BISECTION Build A5-retest: relevant mutation seen, reactive processVineItems skipped');
-      return;
-      // ====================================================================
-
-      // Cancel BOTH pending stages: a stale rAF from an earlier batch would
-      // otherwise queue a second timeout and double-run processVineItems.
-      if (processingRaf) cancelAnimationFrame(processingRaf);
-      if (processingTimeout) clearTimeout(processingTimeout);
-      processingRaf = requestAnimationFrame(() => {
-        processingRaf = null;
-        processingTimeout = setTimeout(() => {
-          processVineItems(false);
-        }, CONFIG.MUTATION_DEBOUNCE);
-      });
-    });
-
-    mutationObserver.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-  }
+  // NOTE: a whole-body MutationObserver used to drive reactive re-processing
+  // here (childList+subtree on document.body). Bisection isolated it as the
+  // cause of a 403 on Amazon's own order-request API — the observer's
+  // relevance check matches the order-popover's tile clone
+  // (data-recommendation-id), so it fired reactively at the exact moment
+  // "Request product" was clicked and broke Amazon's own request handling.
+  // Removed entirely rather than narrowed further, to stop the breakage
+  // immediately. Cost: tiles Amazon adds to the page other than via our own
+  // infinite-scroll fetch (loadNextPageInline, which now calls
+  // processVineItems directly) won't get badges without a reload.
 
   let colorFilterRetries = 0;
   let reviewGenRetries = 0;
@@ -4530,17 +4432,6 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A5, re-test against actual Request-
-    // product click) — remove after testing. Do-nothing control (v1.46.17)
-    // confirmed clean against the real click — this IS script-caused.
-    // MutationObserver attached, reactive processVineItems call skipped
-    // entirely (see the no-op return in the observer callback above).
-    const TEST_DISABLE_DISPLAY = false;
-    const TEST_DISABLE_OBSERVER = false;
-    const TEST_DISABLE_SCROLL = true;
-    const TEST_DISABLE_SYNC_KEYS = false;
-    console.log('[Vine] BISECTION Build A5-retest: MutationObserver attached, reactive processing skipped');
-    // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
       window.location.hostname.includes('vine.amazon.com');
@@ -4550,7 +4441,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       getThresholds(() => { });
       getHideCached(() => { });
       getColorFilter(() => { });
-      if (!TEST_DISABLE_DISPLAY) processVineItems(true);
+      processVineItems(true);
 
       // Auto-sync if a GitHub token is configured. Cache-expiry cleanup is deferred in getCache.
       // Throttled to at most once per SYNC_MIN_INTERVAL across page loads/tabs
@@ -4558,7 +4449,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const syncFreshEnough = () =>
         (Date.now() - (getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0)) < CONFIG.SYNC_MIN_INTERVAL;
-      if (!TEST_DISABLE_SYNC_KEYS && githubToken && !syncFreshEnough()) {
+      if (githubToken && !syncFreshEnough()) {
         // Jitter so multiple open tabs don't all sync at once.
         setTimeout(() => {
           if (syncFreshEnough()) {
@@ -4578,11 +4469,13 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         }, 2000 + Math.random() * 3000);
       }
 
-      if (!TEST_DISABLE_OBSERVER) observePageChanges();
+      // NOTE: no MutationObserver here anymore — see removal notes near the
+      // old observePageChanges location. Infinite scroll drives its own
+      // processing directly (loadNextPageInline calls processVineItems).
       createSettingsUI();
       if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
         createColorFilterUI();
-        if (!TEST_DISABLE_SCROLL) setupInfiniteScroll();
+        setupInfiniteScroll();
       }
     }
 
@@ -4590,7 +4483,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     createReviewGeneratorUI();
 
     // Add keyboard navigation for pagination
-    if (!TEST_DISABLE_SYNC_KEYS) setupKeyboardNavigation();
+    setupKeyboardNavigation();
 
     console.log('Amazon Vine Price Display userscript loaded');
   }
@@ -4603,7 +4496,5 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   window.addEventListener('beforeunload', () => {
     if (pendingCacheUpdates.size > 0) flushCacheUpdates();
-    if (mutationObserver) mutationObserver.disconnect();
-    if (processingTimeout) clearTimeout(processingTimeout);
   });
 })();

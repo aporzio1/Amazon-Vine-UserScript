@@ -1,5 +1,15 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.47.0 - Fix Item-Request 403 by Removing the Whole-Page MutationObserver
+
+- **Fix (major)**: Clicking "Request product" was throwing a 403 from Amazon's own order-request API while the script was active. A multi-day bisection (v1.46.2–v1.46.19, all temporary diagnostic builds, now reverted) traced it to the whole-body `MutationObserver` added for reactive tile detection: its relevance filter matches `data-recommendation-id`, which is also present on the tile clone Amazon's own order popover creates — so the observer's callback fired reactively at the exact moment "Request product" was clicked, and something about running our JS in that window broke Amazon's own request handling.
+- **Removed**: The `MutationObserver` on `document.body` (`observePageChanges`) is gone entirely rather than further narrowed, to stop the breakage immediately. **Cost**: tiles Amazon adds to the page other than through our own infinite-scroll fetch no longer get badges/color-filter automatically — a manual reload picks them up. Infinite scroll itself is unaffected: `loadNextPageInline` now calls `processVineItems` directly on the tiles it appends, instead of relying on the observer to notice them.
+- Removed the now-unused `isReordering` guard (existed only to stop the observer from reacting to our own sort-driven `appendChild` calls) and the `MUTATION_DEBOUNCE` config constant.
+
+## Version 1.46.19 - TEMPORARY Diagnostic Build (bisection A9)
+
+- **Diagnostic (temporary)**: A5-retest (v1.46.18) still 403'd against the real "Request product" click, with the mutation-inspection logic (querySelector/classList checks on added nodes) intact but `processVineItems` skipped — narrows the trigger to the `MutationObserver` itself. This build makes the observer's callback truly empty (returns immediately, no mutation inspection at all) to isolate whether merely having a `MutationObserver` attached to `document.body` subtree is enough, independent of what its callback does. Not a release; will be reverted.
+
 ## Version 1.46.18 - TEMPORARY Diagnostic Build (bisection A5, re-test)
 
 - **Diagnostic (temporary)**: Do-nothing control (v1.46.17) came back clean against the actual "Request product" click, confirming this is script-caused. Re-running Build A5 (MutationObserver attached and watching, reactive `processVineItems` call skipped entirely) specifically against that click — the original A5 clean read was never verified against this exact action. Not a release; will be reverted.
