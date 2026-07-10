@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.16
+// @version      1.46.17
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4521,17 +4521,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A8) — remove after testing. =====
-    // A7 (outbound fetches skipped reactively) still 403'd — fetch loop ruled
-    // out too. All item.dataset.vine* writes in processBatch are now gated
-    // behind isInitialLoad, so the reactive path only reads (queries, cache
-    // lookups, getHideCached/getColorFilter callbacks, checkAndAutoAdvance,
-    // scheduleSortRefresh) and writes nothing to any Amazon DOM node.
-    const TEST_DISABLE_DISPLAY = false;
-    const TEST_DISABLE_OBSERVER = false;
-    const TEST_DISABLE_SCROLL = true;
-    const TEST_DISABLE_SYNC_KEYS = false;
-    console.log('[Vine] BISECTION Build A8: reactive processing on, all dataset writes skipped when reactive');
+    // ===== TEMP ISOLATION TEST (do-nothing control, re-test #3) — remove after testing. =====
+    // NEW INFO: the 403 fires specifically on clicking "Request product" in
+    // the order popover, NOT on opening the modal or browsing. Prior clean
+    // reads (v1.46.2/1.46.7 do-nothing, and every "clean" build since) were
+    // never confirmed to have actually exercised this exact click. Retesting
+    // the true baseline against the real repro step before trusting any more
+    // bisection layers: init() returns immediately, script does nothing at
+    // all. Click "Request product" and see if the 403 still fires.
+    console.log('[Vine] KILL-SWITCH active (re-test #3, testing against actual Request-product click): script loaded but doing nothing');
+    return;
+    // =========================================================================================
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||

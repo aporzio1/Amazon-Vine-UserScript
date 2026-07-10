@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.17 - TEMPORARY Diagnostic Build (do-nothing control, re-test #3)
+
+- **Diagnostic (temporary)**: New info — the 403 fires specifically on clicking "Request product" in the order popover, not from opening the modal or browsing. None of the prior "clean" builds (including the original do-nothing controls, v1.46.2/v1.46.7) were confirmed to have actually exercised this exact click. `init()` returns immediately, script does nothing at all — re-verifying the true baseline against the real repro step (click "Request product") before trusting any further bisection layers. If the 403 fires even here, it is not a script-caused bug at all. Not a release; will be reverted.
+
 ## Version 1.46.16 - TEMPORARY Diagnostic Build (bisection A8)
 
 - **Diagnostic (temporary)**: A7 (v1.46.15) still 403'd, ruling out outbound fetches (`fetchPrice`/`fetchParentPrices`) as the sole trigger. Every `item.dataset.vine*` write inside `processBatch` is now gated behind `isInitialLoad`, so the reactive (mutation-triggered) path is fully read-only — queries, cache lookups, `getHideCached`/`getColorFilter` callbacks, `checkAndAutoAdvance`, and `scheduleSortRefresh` still run, but nothing is written to any Amazon tile DOM node. Isolates whether writing `data-vine-*` attributes onto Amazon's live tile elements reactively is the trigger, vs. the remaining read-only machinery. Not a release; will be reverted.
