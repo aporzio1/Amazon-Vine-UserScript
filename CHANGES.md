@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.47.1 - TEMPORARY Diagnostic Build (badges/hide-style disabled)
+
+- **Diagnostic (temporary)**: v1.47.0 (MutationObserver removed) still 403'd on the real "Request product" click, falsifying the observer theory. This build disables badge-node injection (`item.appendChild(badge)`) and all `applyColorFilter` DOM effects (hide/style/class toggles) entirely — price detection, caching, and all UI panels/sync/keyboard nav/infinite scroll stay on. Isolates whether writing badge nodes / hide-style onto Amazon's tile elements at init time is the real trigger. Not a release; will be reverted (or made permanent if this is confirmed as the cause and no cleaner fix is found).
+
 ## Version 1.47.0 - Fix Item-Request 403 by Removing the Whole-Page MutationObserver
 
 - **Fix (major)**: Clicking "Request product" was throwing a 403 from Amazon's own order-request API while the script was active. A multi-day bisection (v1.46.2–v1.46.19, all temporary diagnostic builds, now reverted) traced it to the whole-body `MutationObserver` added for reactive tile detection: its relevance filter matches `data-recommendation-id`, which is also present on the tile clone Amazon's own order popover creates — so the observer's callback fired reactively at the exact moment "Request product" was clicked, and something about running our JS in that window broke Amazon's own request handling.

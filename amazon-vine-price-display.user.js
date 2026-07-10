@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.47.0
+// @version      1.47.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1072,6 +1072,12 @@
   // to seen=true once, for the next session — guarded by vineSeenPersisted so we don't re-write
   // the cache every time the filter re-applies.
   function applyColorFilter(item, color) {
+    // ===== TEMP DIAGNOSTIC (post-A9 fix attempt) — remove after testing. =====
+    // v1.47.0 (MutationObserver removed) still 403'd on Request-product,
+    // falsifying the observer theory. Isolating badge/hide-style DOM writes
+    // onto Amazon's tile nodes as the next candidate.
+    return;
+    // ==========================================================================
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
         const isSeen = item.dataset.vineSeen === 'true';
@@ -1185,12 +1191,7 @@
             item.dataset.vineSeen = String(isSeen);
 
             const color = getPriceColorSync(cached.price);
-            const badge = createPriceBadge(
-              { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
-              true, isSeen, color
-            );
-            attachExternalLinks(badge, asin, getTileTitle(item));
-            item.appendChild(badge);
+            // TEMP DIAGNOSTIC: badge node injection disabled, see applyColorFilter.
             applyColorFilter(item, color);
           } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
             // Recently confirmed to have no price — skip the fetch and mirror
@@ -1241,9 +1242,7 @@
                 item.dataset.vineSeen = priorIsSeen ? 'true' : 'false';
               });
 
-              const badge = createPriceBadge(priceData, false, false, color);
-              attachExternalLinks(badge, asin, getTileTitle(item));
-              item.appendChild(badge);
+              // TEMP DIAGNOSTIC: badge node injection disabled, see applyColorFilter.
               applyColorFilter(item, color);
               scheduleSortRefresh();
             } else {
