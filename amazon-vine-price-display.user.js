@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.14
+// @version      1.46.15
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1219,7 +1219,14 @@
           }
         });
 
-        uncachedItems.forEach(({ item, asin, url, isParent, recId, priorIsSeen }) => {
+        // ===== TEMP BISECTION TEST (Build A7) — remove after testing. =====
+        // Skip outbound fetches (fetchPrice / fetchParentPrices, including
+        // the /vine/api/recommendations/ call) entirely on reactive calls;
+        // dataset writes + cache reads above still run. Leading suspect:
+        // fetchParentPrices hits Amazon's own internal recommendations API,
+        // which may collide with Amazon's in-flight call for the same
+        // recId when the reactive run is triggered by the order popover.
+        (isInitialLoad ? uncachedItems : []).forEach(({ item, asin, url, isParent, recId, priorIsSeen }) => {
           const fetchId = `${asin}-${Date.now()}`;
           activeFetches.set(asin, fetchId);
 
@@ -4503,19 +4510,23 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A6) — remove after testing. =====
-    // A5 confirmed the reactive processVineItems(false) call is the trigger.
-    // Found: module-level TEST object (line 34, leftover from Build C) has
-    // been unconditionally suppressing badge nodes + color-filter/hide logic
-    // in every build since — those were never actually re-tested. Only the
-    // style.position write (processBatch, unconditional, not gated by TEST)
-    // was a live untested candidate. This build re-enables the reactive call
-    // but skips style.position specifically when reactive (isInitialLoad=false).
+    // ===== TEMP BISECTION TEST (Build A7) — remove after testing. =====
+    // A6 (style.position skipped reactively) still 403'd — style write ruled
+    // out. Fable's review: reactive processVineItems(false) only does real
+    // work on genuinely unprocessed tiles (dataset.vinePriceProcessed guard),
+    // and the observer's own relevance filter matches Amazon's order-popover
+    // clone (data-recommendation-id) — so the reactive run is guaranteed to
+    // fire exactly when the order popover opens. Leading suspect: outbound
+    // fetches (fetchPrice / fetchParentPrices, which hits Amazon's own
+    // /vine/api/recommendations/ endpoint) firing reactively at that moment,
+    // colliding with Amazon's in-flight request for the same recId. This
+    // build skips the entire uncachedItems fetch loop when reactive; dataset
+    // writes + cache reads still run reactively as before.
     const TEST_DISABLE_DISPLAY = false;
     const TEST_DISABLE_OBSERVER = false;
     const TEST_DISABLE_SCROLL = true;
     const TEST_DISABLE_SYNC_KEYS = false;
-    console.log('[Vine] BISECTION Build A6: reactive processing on, style.position write skipped when reactive');
+    console.log('[Vine] BISECTION Build A7: reactive processing on, outbound fetches (fetchPrice/fetchParentPrices) skipped when reactive');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||

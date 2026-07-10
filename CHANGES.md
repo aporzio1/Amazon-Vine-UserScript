@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.15 - TEMPORARY Diagnostic Build (bisection A7)
+
+- **Diagnostic (temporary)**: A6 (v1.46.14) still 403'd — the `style.position` write is ruled out. Fable's review found the reactive `processVineItems(false)` call only does real work on genuinely unprocessed tiles, and the `MutationObserver`'s own relevance filter matches Amazon's order-popover clone (`data-recommendation-id`) — so the reactive run is guaranteed to fire right as the order popover opens. Leading suspect: outbound fetches (`fetchPrice` / `fetchParentPrices`, which calls Amazon's own internal `/vine/api/recommendations/` endpoint) firing reactively at that exact moment, colliding with Amazon's in-flight request for the same `recId`. This build skips the entire uncached-item fetch loop when triggered reactively; dataset writes and cache reads still run reactively as before. Not a release; will be reverted.
+
 ## Version 1.46.14 - TEMPORARY Diagnostic Build (bisection A6)
 
 - **Diagnostic (temporary)**: A5 (v1.46.13) confirmed the reactive `processVineItems(false)` call (triggered by the whole-body `MutationObserver`) is the 403 trigger. Correction to the bisection: a module-level `TEST` object (line 34, left over from Build C) has been unconditionally suppressing badge-node injection and color-filter/hide logic in every build since v1.46.5 — those paths were never actually re-tested in B2/A2/A3/A4/A5, so "badges/hide-style ruled out" did not hold. The one live, untested candidate still running unconditionally in `processBatch` was `item.style.position = 'relative'`. This build re-enables the reactive call but skips that style write specifically when triggered reactively (it already ran safely at init in prior builds). Not a release; will be reverted.
