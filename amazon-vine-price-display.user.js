@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.15
+// @version      1.46.16
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1144,11 +1144,16 @@
       if (link) {
         try { origin = new URL(link.href, location.href).origin; } catch (e) { /* keep location.origin */ }
       }
-      // Store ASIN on item immediately for consistency
-      item.dataset.vineAsin = asin;
-      if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
-        item.dataset.vineIsParent = 'true';
+      // ===== TEMP BISECTION TEST (Build A8) — remove after testing. =====
+      // Skip these dataset writes on reactive (mutation-triggered) calls.
+      if (isInitialLoad) {
+        // Store ASIN on item immediately for consistency
+        item.dataset.vineAsin = asin;
+        if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
+          item.dataset.vineIsParent = 'true';
+        }
       }
+      // ====================================================================
       return {
         item,
         asin,
@@ -1171,7 +1176,9 @@
         item.style.position = 'relative';
       }
       // ====================================================================
-      item.dataset.vinePriceProcessed = 'true';
+      // ===== TEMP BISECTION TEST (Build A8) — skip on reactive calls. =====
+      if (isInitialLoad) item.dataset.vinePriceProcessed = 'true';
+      // ====================================================================
     });
 
     const asins = itemData.map(data => data.asin);
@@ -1190,13 +1197,17 @@
           // every reload just because we have to refetch its price.
           const staleApproxEntry = !!(cached && cached.approx === true);
           if (cached && !staleParentEntry && !staleApproxEntry && cached.price !== undefined && cached.price !== null) {
-            item.dataset.vineIsCached = 'true';
-            item.dataset.vinePrice = cached.price;
-            if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
-            if (cached.isEtv) item.dataset.vineIsEtv = 'true';
+            // ===== TEMP BISECTION TEST (Build A8) — skip on reactive calls. =====
+            if (isInitialLoad) {
+              item.dataset.vineIsCached = 'true';
+              item.dataset.vinePrice = cached.price;
+              if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
+              if (cached.isEtv) item.dataset.vineIsEtv = 'true';
+            }
+            // ====================================================================
             // Default to true for legacy cache entries without isSeen property
             const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
-            item.dataset.vineSeen = String(isSeen);
+            if (isInitialLoad) item.dataset.vineSeen = String(isSeen);
 
             const color = getPriceColorSync(cached.price);
             const badge = createPriceBadge(
@@ -1211,7 +1222,7 @@
           } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
             // Recently confirmed to have no price — skip the fetch and mirror
             // the live-failure behavior (pre-release tiles get hidden).
-            item.dataset.vineNoPrice = 'true';
+            if (isInitialLoad) item.dataset.vineNoPrice = 'true'; // Build A8: skip reactively
             if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
             const priorIsSeen = staleApproxEntry ? !!cached.isSeen : false;
@@ -4510,23 +4521,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A7) — remove after testing. =====
-    // A6 (style.position skipped reactively) still 403'd — style write ruled
-    // out. Fable's review: reactive processVineItems(false) only does real
-    // work on genuinely unprocessed tiles (dataset.vinePriceProcessed guard),
-    // and the observer's own relevance filter matches Amazon's order-popover
-    // clone (data-recommendation-id) — so the reactive run is guaranteed to
-    // fire exactly when the order popover opens. Leading suspect: outbound
-    // fetches (fetchPrice / fetchParentPrices, which hits Amazon's own
-    // /vine/api/recommendations/ endpoint) firing reactively at that moment,
-    // colliding with Amazon's in-flight request for the same recId. This
-    // build skips the entire uncachedItems fetch loop when reactive; dataset
-    // writes + cache reads still run reactively as before.
+    // ===== TEMP BISECTION TEST (Build A8) — remove after testing. =====
+    // A7 (outbound fetches skipped reactively) still 403'd — fetch loop ruled
+    // out too. All item.dataset.vine* writes in processBatch are now gated
+    // behind isInitialLoad, so the reactive path only reads (queries, cache
+    // lookups, getHideCached/getColorFilter callbacks, checkAndAutoAdvance,
+    // scheduleSortRefresh) and writes nothing to any Amazon DOM node.
     const TEST_DISABLE_DISPLAY = false;
     const TEST_DISABLE_OBSERVER = false;
     const TEST_DISABLE_SCROLL = true;
     const TEST_DISABLE_SYNC_KEYS = false;
-    console.log('[Vine] BISECTION Build A7: reactive processing on, outbound fetches (fetchPrice/fetchParentPrices) skipped when reactive');
+    console.log('[Vine] BISECTION Build A8: reactive processing on, all dataset writes skipped when reactive');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||

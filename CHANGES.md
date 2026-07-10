@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.16 - TEMPORARY Diagnostic Build (bisection A8)
+
+- **Diagnostic (temporary)**: A7 (v1.46.15) still 403'd, ruling out outbound fetches (`fetchPrice`/`fetchParentPrices`) as the sole trigger. Every `item.dataset.vine*` write inside `processBatch` is now gated behind `isInitialLoad`, so the reactive (mutation-triggered) path is fully read-only — queries, cache lookups, `getHideCached`/`getColorFilter` callbacks, `checkAndAutoAdvance`, and `scheduleSortRefresh` still run, but nothing is written to any Amazon tile DOM node. Isolates whether writing `data-vine-*` attributes onto Amazon's live tile elements reactively is the trigger, vs. the remaining read-only machinery. Not a release; will be reverted.
+
 ## Version 1.46.15 - TEMPORARY Diagnostic Build (bisection A7)
 
 - **Diagnostic (temporary)**: A6 (v1.46.14) still 403'd — the `style.position` write is ruled out. Fable's review found the reactive `processVineItems(false)` call only does real work on genuinely unprocessed tiles, and the `MutationObserver`'s own relevance filter matches Amazon's order-popover clone (`data-recommendation-id`) — so the reactive run is guaranteed to fire right as the order popover opens. Leading suspect: outbound fetches (`fetchPrice` / `fetchParentPrices`, which calls Amazon's own internal `/vine/api/recommendations/` endpoint) firing reactively at that exact moment, colliding with Amazon's in-flight request for the same `recId`. This build skips the entire uncached-item fetch loop when triggered reactively; dataset writes and cache reads still run reactively as before. Not a release; will be reverted.
