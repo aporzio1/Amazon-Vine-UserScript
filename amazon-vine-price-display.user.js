@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.17
+// @version      1.46.18
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1635,6 +1635,15 @@
       });
 
       if (!hasRelevantChanges) return;
+
+      // ===== TEMP BISECTION TEST (Build A5, re-test against actual Request-
+      // product click) — remove after testing. Observer stays attached and
+      // watching document.body subtree, but the reactive processVineItems
+      // call is skipped entirely (log only). Previously read clean, but was
+      // never verified against clicking "Request product" specifically.
+      console.log('[Vine] BISECTION Build A5-retest: relevant mutation seen, reactive processVineItems skipped');
+      return;
+      // ====================================================================
 
       // Cancel BOTH pending stages: a stale rAF from an earlier batch would
       // otherwise queue a second timeout and double-run processVineItems.
@@ -4521,17 +4530,16 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP ISOLATION TEST (do-nothing control, re-test #3) — remove after testing. =====
-    // NEW INFO: the 403 fires specifically on clicking "Request product" in
-    // the order popover, NOT on opening the modal or browsing. Prior clean
-    // reads (v1.46.2/1.46.7 do-nothing, and every "clean" build since) were
-    // never confirmed to have actually exercised this exact click. Retesting
-    // the true baseline against the real repro step before trusting any more
-    // bisection layers: init() returns immediately, script does nothing at
-    // all. Click "Request product" and see if the 403 still fires.
-    console.log('[Vine] KILL-SWITCH active (re-test #3, testing against actual Request-product click): script loaded but doing nothing');
-    return;
-    // =========================================================================================
+    // ===== TEMP BISECTION TEST (Build A5, re-test against actual Request-
+    // product click) — remove after testing. Do-nothing control (v1.46.17)
+    // confirmed clean against the real click — this IS script-caused.
+    // MutationObserver attached, reactive processVineItems call skipped
+    // entirely (see the no-op return in the observer callback above).
+    const TEST_DISABLE_DISPLAY = false;
+    const TEST_DISABLE_OBSERVER = false;
+    const TEST_DISABLE_SCROLL = true;
+    const TEST_DISABLE_SYNC_KEYS = false;
+    console.log('[Vine] BISECTION Build A5-retest: MutationObserver attached, reactive processing skipped');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||

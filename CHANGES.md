@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.18 - TEMPORARY Diagnostic Build (bisection A5, re-test)
+
+- **Diagnostic (temporary)**: Do-nothing control (v1.46.17) came back clean against the actual "Request product" click, confirming this is script-caused. Re-running Build A5 (MutationObserver attached and watching, reactive `processVineItems` call skipped entirely) specifically against that click — the original A5 clean read was never verified against this exact action. Not a release; will be reverted.
+
 ## Version 1.46.17 - TEMPORARY Diagnostic Build (do-nothing control, re-test #3)
 
 - **Diagnostic (temporary)**: New info — the 403 fires specifically on clicking "Request product" in the order popover, not from opening the modal or browsing. None of the prior "clean" builds (including the original do-nothing controls, v1.46.2/v1.46.7) were confirmed to have actually exercised this exact click. `init()` returns immediately, script does nothing at all — re-verifying the true baseline against the real repro step (click "Request product") before trusting any further bisection layers. If the 403 fires even here, it is not a script-caused bug at all. Not a release; will be reverted.
