@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.46.12
+// @version      1.46.13
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1613,6 +1613,16 @@
       });
 
       if (!hasRelevantChanges) return;
+
+      // ===== TEMP BISECTION TEST (Build A5) — remove after testing. =====
+      // A4 confirmed MutationObserver is the trigger. Isolating further:
+      // observer stays attached and watching document.body subtree, but the
+      // reactive processVineItems(false) callback is skipped (log only).
+      if (window.__vineTestObserverNoop) {
+        console.log('[Vine] BISECTION Build A5: relevant mutation seen, reactive processVineItems skipped');
+        return;
+      }
+      // ====================================================================
 
       // Cancel BOTH pending stages: a stale rAF from an earlier batch would
       // otherwise queue a second timeout and double-run processVineItems.
@@ -4499,14 +4509,16 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
-    // ===== TEMP BISECTION TEST (Build A4) — remove after testing. =====
-    // A3 passed clean (sync+keydown ruled out). Trigger is MutationObserver
-    // or infinite scroll. This build: MutationObserver ON, infinite scroll OFF.
+    // ===== TEMP BISECTION TEST (Build A5) — remove after testing. =====
+    // A4 confirmed MutationObserver is the trigger. Observer stays attached
+    // and watching document.body subtree, but its reactive processVineItems
+    // callback is now a no-op (see window.__vineTestObserverNoop below).
     const TEST_DISABLE_DISPLAY = false;
     const TEST_DISABLE_OBSERVER = false;
     const TEST_DISABLE_SCROLL = true;
     const TEST_DISABLE_SYNC_KEYS = false;
-    console.log('[Vine] BISECTION Build A4: MutationObserver on, infinite scroll off');
+    window.__vineTestObserverNoop = true;
+    console.log('[Vine] BISECTION Build A5: MutationObserver attached, reactive processing skipped');
     // =================================================================
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||

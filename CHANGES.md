@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.46.13 - TEMPORARY Diagnostic Build (bisection A5)
+
+- **Diagnostic (temporary)**: A4 (v1.46.12) confirmed the whole-body `MutationObserver` is the 403 trigger. This build keeps the observer attached and watching `document.body` subtree, but its reactive `processVineItems(false)` callback is now a no-op (logs only). Isolates whether the mere act of observing is enough, or whether it's specifically the reactive re-processing call — noting that direct `processVineItems(true)` at init was already cleared in Build B2. Not a release; will be reverted.
+
 ## Version 1.46.12 - TEMPORARY Diagnostic Build (bisection A4)
 
 - **Diagnostic (temporary)**: A3 (v1.46.11) passed clean, ruling out GitHub auto-sync + keydown hook. This build isolates the remaining pair: whole-body `MutationObserver` (`observePageChanges`) stays ON, infinite scroll (`setupInfiniteScroll`) is OFF. Not a release; will be reverted.
