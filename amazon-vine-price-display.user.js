@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.47.2
+// @version      1.48.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -913,25 +913,171 @@
     return badge;
   }
 
-  // ===== TEMP DIAGNOSTIC (v1.47.2) — remove after testing. =====
-  // v1.47.1 (badges + applyColorFilter DOM writes off) still 403'd on the real
-  // Request-product click, and disabling the script entirely fixes it 100% of the
-  // time. Remaining suspect: the data-vine-* attributes / inline styles the script
-  // writes onto Amazon's tile nodes, which Amazon clones into the order popover and
-  // submits. This flag makes the script write NOTHING to tile nodes (dedup moves to
-  // a WeakSet) while keeping fetching/caching/UI on, to confirm the cause.
-  const DIAG_SKIP_TILE_WRITES = true;
-  const _processedTiles = new WeakSet();
+  // ---- Off-DOM tile state + overlay rendering ----
+  // Amazon serializes the item tile (attributes and all) into the item-request
+  // flow: the request popover clones the tile, and the server 403s requests
+  // built from a modified one. Proven by the v1.46–v1.47.2 bisection — with
+  // zero tile writes, requests succeed 100%. So ALL per-tile script state
+  // lives here (WeakMap), badges/highlights render into an overlay layer on
+  // <body>, and hiding is done from our own stylesheet. Amazon's tile subtree
+  // is never written to — no attributes, no classes, no styles, no children.
+  const tileStates = new WeakMap();
+  const tileRegistry = []; // processed tiles in processing order (page lifetime)
+
+  function tileState(item) {
+    let s = tileStates.get(item);
+    if (!s) {
+      s = {
+        asin: null, isParent: false,
+        price: null, priceMax: null, isEtv: false, approx: false,
+        isCached: false, noPrice: false,
+        seen: false, seenPersisted: false,
+        hidden: false, color: null,
+        preRelease: null, title: null, kwState: null, kwRev: -1,
+        processed: false, overlay: null, badge: null, highlightBox: null
+      };
+      tileStates.set(item, s);
+    }
+    return s;
+  }
+
+  function isTileProcessed(item) {
+    const s = tileStates.get(item);
+    return !!(s && s.processed);
+  }
+
+  let overlayRoot = null;
+  function ensureOverlayRoot() {
+    if (!overlayRoot || !overlayRoot.isConnected) {
+      overlayRoot = document.createElement('div');
+      overlayRoot.id = 'vine-overlay-root';
+      document.body.appendChild(overlayRoot);
+    }
+    return overlayRoot;
+  }
+
+  function ensureTileOverlay(item) {
+    const s = tileState(item);
+    if (!s.overlay || !s.overlay.isConnected) {
+      const ov = document.createElement('div');
+      ov.className = 'vine-tile-overlay';
+      if (s.overlay) { // carry surviving children (badge/highlight) across a re-create
+        while (s.overlay.firstChild) ov.appendChild(s.overlay.firstChild);
+      }
+      ensureOverlayRoot().appendChild(ov);
+      s.overlay = ov;
+      positionTileOverlay(item);
+    }
+    return s.overlay;
+  }
+
+  function positionTileOverlay(item) {
+    const s = tileStates.get(item);
+    if (!s || !s.overlay) return;
+    if (s.hidden || !item.isConnected) {
+      s.overlay.style.display = 'none';
+      return;
+    }
+    const rect = item.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      s.overlay.style.display = 'none';
+      return;
+    }
+    s.overlay.style.display = '';
+    s.overlay.style.left = `${rect.left + window.scrollX}px`;
+    s.overlay.style.top = `${rect.top + window.scrollY}px`;
+    s.overlay.style.width = `${rect.width}px`;
+    s.overlay.style.height = `${rect.height}px`;
+  }
+
+  // Overlays live at document coordinates, so scrolling needs no work — only
+  // layout changes do (resize, hide/show, sort reorder, appended pages).
+  let overlaySyncQueued = false;
+  function repositionAllOverlays() {
+    if (overlaySyncQueued) return;
+    overlaySyncQueued = true;
+    requestAnimationFrame(() => {
+      overlaySyncQueued = false;
+      tileRegistry.forEach(positionTileOverlay);
+    });
+  }
+
+  let gridResizeObserver = null;
+  function watchGridLayout() {
+    const root = vineItemsRoot();
+    const target = root === document ? document.body : root;
+    if (gridResizeObserver) gridResizeObserver.disconnect();
+    if (typeof ResizeObserver === 'function') {
+      gridResizeObserver = new ResizeObserver(repositionAllOverlays);
+      gridResizeObserver.observe(target);
+    }
+    window.addEventListener('resize', repositionAllOverlays);
+  }
+
+  function attachBadgeToTile(item, badge) {
+    const s = tileState(item);
+    if (s.badge) s.badge.remove();
+    s.badge = badge;
+    ensureTileOverlay(item).appendChild(badge);
+  }
+
+  function setTileHighlight(item, on) {
+    const s = tileState(item);
+    if (on) {
+      if (!s.highlightBox || !s.highlightBox.isConnected) {
+        s.highlightBox = document.createElement('div');
+        s.highlightBox.className = 'vine-tile-highlight';
+        ensureTileOverlay(item).appendChild(s.highlightBox);
+      }
+    } else if (s.highlightBox) {
+      s.highlightBox.remove();
+      s.highlightBox = null;
+    }
+  }
+
+  // Hide tiles from OUR stylesheet by grid position (:nth-child) — display:none
+  // without writing a class/style/attribute onto Amazon's nodes. Rebuilt
+  // (rAF-debounced) whenever hidden-state changes; anything that reorders or
+  // restructures the grid (sort) must rebuild too, since the indexes shift.
+  let hideStyleEl = null;
+  let hideRebuildQueued = false;
+  function scheduleHideRebuild() {
+    if (hideRebuildQueued) return;
+    hideRebuildQueued = true;
+    requestAnimationFrame(() => {
+      hideRebuildQueued = false;
+      rebuildHideStyles();
+    });
+  }
+
+  function rebuildHideStyles() {
+    if (!hideStyleEl || !hideStyleEl.isConnected) {
+      hideStyleEl = document.createElement('style');
+      hideStyleEl.id = 'vine-hide-styles';
+      document.head.appendChild(hideStyleEl);
+    }
+    const selectors = [];
+    tileRegistry.forEach((item) => {
+      const s = tileStates.get(item);
+      if (!s || !s.hidden || !item.isConnected) return;
+      const parent = item.parentElement;
+      // Known grids only — never fall back to touching the tile itself.
+      if (!parent || !parent.matches('.vvp-items-grid, #vvp-items-grid')) return;
+      const idx = Array.prototype.indexOf.call(parent.children, item) + 1;
+      selectors.push(`:is(.vvp-items-grid, #vvp-items-grid) > :nth-child(${idx})`);
+    });
+    hideStyleEl.textContent = selectors.length
+      ? `${selectors.join(',\n')} { display: none !important; }`
+      : '';
+    repositionAllOverlays();
+  }
 
   // Pre-release detection drives the "auto mark as seen" path when price fetch fails.
-  // Memoized on item.dataset.vinePreRelease because the full text-normalization scan is expensive.
+  // Memoized in tile state because the full text-normalization scan is expensive.
   function isPreReleaseItem(item) {
-    if (item.dataset.vinePreRelease === 'true') return true;
-    if (item.dataset.vinePreRelease === 'false') return false;
-
-    const result = computePreReleaseItem(item);
-    if (!DIAG_SKIP_TILE_WRITES) item.dataset.vinePreRelease = result ? 'true' : 'false';
-    return result;
+    const s = tileState(item);
+    if (s.preRelease === null) s.preRelease = computePreReleaseItem(item);
+    return s.preRelease;
   }
 
   function computePreReleaseItem(item) {
@@ -967,7 +1113,8 @@
   // ---- Tile title + keyword lists + external price-check links ----
 
   function getTileTitle(item) {
-    if (item.dataset.vineTitle) return item.dataset.vineTitle;
+    const s = tileState(item);
+    if (s.title !== null) return s.title;
     // .a-truncate-full holds the un-ellipsized title (visually hidden)
     const fullTitle = item.querySelector('.vvp-item-product-title-container .a-truncate-full');
     let title = fullTitle ? fullTitle.textContent.trim() : '';
@@ -979,7 +1126,7 @@
       const img = item.querySelector('img[alt]');
       title = img ? img.alt.trim() : '';
     }
-    if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineTitle = title;
+    s.title = title;
     return title;
   }
 
@@ -1008,8 +1155,9 @@
   }
 
   function getKeywordStateSync(item) {
-    if (item.dataset.vineKwRev === String(keywordListsRevision) && item.dataset.vineKwState) {
-      return item.dataset.vineKwState;
+    const s = tileState(item);
+    if (s.kwRev === keywordListsRevision && s.kwState) {
+      return s.kwState;
     }
     const lists = getKeywordListsSync();
     let state = 'none';
@@ -1021,10 +1169,8 @@
         state = 'highlight';
       }
     }
-    if (!DIAG_SKIP_TILE_WRITES) {
-      item.dataset.vineKwState = state;
-      item.dataset.vineKwRev = String(keywordListsRevision);
-    }
+    s.kwState = state;
+    s.kwRev = keywordListsRevision;
     return state;
   }
 
@@ -1079,53 +1225,47 @@
   }
 
   // Apply color filter to an item.
-  // NOTE: we intentionally don't flip item.dataset.vineSeen to 'true' when a not-seen item is shown,
+  // NOTE: we intentionally don't flip state.seen to true when a not-seen item is shown,
   // otherwise toggling "Hide Seen" back on would make it vanish mid-session. The cache is bumped
-  // to seen=true once, for the next session — guarded by vineSeenPersisted so we don't re-write
+  // to seen=true once, for the next session — guarded by state.seenPersisted so we don't re-write
   // the cache every time the filter re-applies.
   function applyColorFilter(item, color) {
-    // ===== TEMP DIAGNOSTIC (post-A9 fix attempt) — remove after testing. =====
-    // v1.47.0 (MutationObserver removed) still 403'd on Request-product,
-    // falsifying the observer theory. Isolating badge/hide-style DOM writes
-    // onto Amazon's tile nodes as the next candidate.
-    return;
-    // ==========================================================================
     getColorFilter((filter) => {
       getHideCached((shouldHideCached) => {
-        const isSeen = item.dataset.vineSeen === 'true';
+        const s = tileState(item);
+        s.color = color;
+        const isSeen = s.seen === true;
         const colorAllowed = filter[color];
         const kwState = getKeywordStateSync(item);
-        item.classList.toggle('vine-keyword-highlight', kwState === 'highlight');
+        setTileHighlight(item, kwState === 'highlight');
         const shouldShow = colorAllowed && !(isSeen && shouldHideCached) && kwState !== 'block';
 
         if (shouldShow) {
-          item.style.display = '';
-          item.dataset.vineHidden = 'false';
+          s.hidden = false;
 
           // Approx (wrong-variant) tiles are excluded here — this write doesn't
           // tag the entry as approx, and doing so would let a stale/possibly-wrong
           // price get served directly on a future load. Their isSeen is instead
           // persisted (with the approx tag) at fetch time in processBatch.
-          if (!isSeen && item.dataset.vineSeenPersisted !== 'true' && item.dataset.vineApprox !== 'true') {
-            const asin = item.dataset.vineAsin;
-            const price = parseFloat(item.dataset.vinePrice);
-            if (asin && !isNaN(price)) {
+          if (!isSeen && !s.seenPersisted && !s.approx) {
+            const asin = s.asin;
+            const price = s.price;
+            if (asin && typeof price === 'number' && !isNaN(price)) {
               // carry the variant metadata through, or this rewrite would strip
               // isParent and force a refetch of parent items on every load
-              const priceMax = parseFloat(item.dataset.vinePriceMax);
               setCachedPrice(asin, price, true, {
-                priceMax: isNaN(priceMax) ? null : priceMax,
-                isParent: item.dataset.vineIsParent === 'true',
-                isEtv: item.dataset.vineIsEtv === 'true'
+                priceMax: s.priceMax != null ? s.priceMax : null,
+                isParent: s.isParent,
+                isEtv: s.isEtv
               });
-              item.dataset.vineSeenPersisted = 'true';
+              s.seenPersisted = true;
             }
           }
         } else {
-          item.style.display = 'none';
-          item.dataset.vineHidden = 'true';
+          s.hidden = true;
         }
 
+        scheduleHideRebuild();
         checkAndAutoAdvance();
       });
     });
@@ -1152,13 +1292,10 @@
       if (link) {
         try { origin = new URL(link.href, location.href).origin; } catch (e) { /* keep location.origin */ }
       }
-      // Store ASIN on item immediately for consistency
-      if (!DIAG_SKIP_TILE_WRITES) {
-        item.dataset.vineAsin = asin;
-        if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
-          item.dataset.vineIsParent = 'true';
-        }
-      }
+      // Track ASIN/variant info immediately — off-DOM, never on Amazon's tile
+      const s = tileState(item);
+      s.asin = asin;
+      s.isParent = !!(detailsInput && detailsInput.dataset.isParentAsin === 'true');
       return {
         item,
         asin,
@@ -1170,17 +1307,11 @@
 
     if (itemData.length === 0) return;
 
-    // Batch style checks - only check first item and apply to all if needed
-    const needsPositioning = itemData.length > 0 && getComputedStyle(itemData[0].item).position === 'static';
-
     itemData.forEach(({ item }) => {
-      if (needsPositioning && !DIAG_SKIP_TILE_WRITES) {
-        item.style.position = 'relative';
-      }
-      if (DIAG_SKIP_TILE_WRITES) {
-        _processedTiles.add(item);
-      } else {
-        item.dataset.vinePriceProcessed = 'true';
+      const s = tileState(item);
+      if (!s.processed) {
+        s.processed = true;
+        tileRegistry.push(item);
       }
     });
 
@@ -1200,23 +1331,27 @@
           // every reload just because we have to refetch its price.
           const staleApproxEntry = !!(cached && cached.approx === true);
           if (cached && !staleParentEntry && !staleApproxEntry && cached.price !== undefined && cached.price !== null) {
-            if (!DIAG_SKIP_TILE_WRITES) {
-              item.dataset.vineIsCached = 'true';
-              item.dataset.vinePrice = cached.price;
-              if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
-              if (cached.isEtv) item.dataset.vineIsEtv = 'true';
-              // Default to true for legacy cache entries without isSeen property
-              const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
-              item.dataset.vineSeen = String(isSeen);
-            }
+            const s = tileState(item);
+            s.isCached = true;
+            s.price = cached.price;
+            if (cached.priceMax != null) s.priceMax = cached.priceMax;
+            s.isEtv = !!cached.isEtv;
+            // Default to true for legacy cache entries without isSeen property
+            const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
+            s.seen = !!isSeen;
 
             const color = getPriceColorSync(cached.price);
-            // TEMP DIAGNOSTIC: badge node injection disabled, see applyColorFilter.
+            const badge = createPriceBadge(
+              { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
+              true, isSeen, color
+            );
+            attachExternalLinks(badge, asin, getTileTitle(item));
+            attachBadgeToTile(item, badge);
             applyColorFilter(item, color);
           } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
             // Recently confirmed to have no price — skip the fetch and mirror
             // the live-failure behavior (pre-release tiles get hidden).
-            if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineNoPrice = 'true';
+            tileState(item).noPrice = true;
             if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
             const priorIsSeen = staleApproxEntry ? !!cached.isSeen : false;
@@ -1233,14 +1368,13 @@
             activeFetches.delete(asin);
             if (priceData) {
               const color = getPriceColorSync(priceData.price);
+              const s = tileState(item);
 
               // Store price (lowest of a range) — filters/sort key off this
-              if (!DIAG_SKIP_TILE_WRITES) {
-                item.dataset.vinePrice = priceData.price;
-                if (priceData.priceMax != null) item.dataset.vinePriceMax = priceData.priceMax;
-                if (priceData.isEtv) item.dataset.vineIsEtv = 'true';
-                if (priceData.approx) item.dataset.vineApprox = 'true';
-              }
+              s.price = priceData.price;
+              if (priceData.priceMax != null) s.priceMax = priceData.priceMax;
+              if (priceData.isEtv) s.isEtv = true;
+              if (priceData.approx) s.approx = true;
 
               // Calculate visibility (isSeen) based on filters
               getColorFilter((filter) => {
@@ -1261,10 +1395,12 @@
                 // Carry forward whether this tile was already marked seen in
                 // a prior session (relevant for approx tiles, which always
                 // land here since their price can't be served from cache).
-                if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineSeen = priorIsSeen ? 'true' : 'false';
+                s.seen = !!priorIsSeen;
               });
 
-              // TEMP DIAGNOSTIC: badge node injection disabled, see applyColorFilter.
+              const badge = createPriceBadge(priceData, false, false, color);
+              attachExternalLinks(badge, asin, getTileTitle(item));
+              attachBadgeToTile(item, badge);
               applyColorFilter(item, color);
               scheduleSortRefresh();
             } else {
@@ -1272,7 +1408,7 @@
               // this item doesn't re-fetch on every page load.
               if (!isThrottled()) {
                 setCachedPrice(asin, null, false, { noPrice: true, isParent });
-                if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineNoPrice = 'true';
+                tileState(item).noPrice = true;
               }
               // If price fetch failed but it IS a pre-release item
               if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
@@ -1321,7 +1457,10 @@
       const allItems = findVineItems();
       if (allItems.length === 0) return;
 
-      const allHidden = allItems.every(item => item.dataset.vineHidden === 'true');
+      const allHidden = allItems.every(item => {
+        const s = tileStates.get(item);
+        return s && s.hidden === true;
+      });
       if (!allHidden) return;
 
       const nextButton = findPageLink(CONFIG.NEXT_PAGE_SELECTORS);
@@ -1376,8 +1515,10 @@
     if (!parent) return;
 
     const sorted = [...items].sort((a, b) => {
-      const pa = parseFloat(a.dataset.vinePrice);
-      const pb = parseFloat(b.dataset.vinePrice);
+      const sa = tileStates.get(a);
+      const sb = tileStates.get(b);
+      const pa = sa && typeof sa.price === 'number' ? sa.price : NaN;
+      const pb = sb && typeof sb.price === 'number' ? sb.price : NaN;
       const va = isNaN(pa) ? Infinity : pa; // unpriced tiles sink to the end
       const vb = isNaN(pb) ? Infinity : pb;
       if (va === vb) return 0;
@@ -1386,8 +1527,11 @@
       return order === 'asc' ? va - vb : vb - va;
     });
 
-    // appendChild moves nodes; badges/listeners survive the move.
+    // appendChild moves nodes (Amazon's tiles are untouched — just reordered).
     sorted.forEach(item => parent.appendChild(item));
+
+    // Reorder shifts :nth-child indexes and tile positions — resync both.
+    scheduleHideRebuild();
   }
 
   // Debounced re-sort: prices arrive async, so the page settles into order
@@ -1487,9 +1631,11 @@
       }
 
       // Vine reshuffles items between pages — skip tiles already on the page.
-      const presentAsins = new Set(
-        Array.from(document.querySelectorAll('[data-vine-asin]')).map(el => el.dataset.vineAsin)
-      );
+      const presentAsins = new Set();
+      tileRegistry.forEach((t) => {
+        const s = tileStates.get(t);
+        if (s && s.asin) presentAsins.add(s.asin);
+      });
       const appended = [];
       newTiles.forEach(tile => {
         const input = tile.querySelector('.vvp-details-btn input, input[data-recommendation-id]');
@@ -1555,7 +1701,7 @@
     if (cachedSelector) {
       const found = root.querySelectorAll(cachedSelector);
       if (found.length > 0) {
-        items = Array.from(found).filter(item => !_processedTiles.has(item) && !item.dataset.vinePriceProcessed);
+        items = Array.from(found).filter(item => !isTileProcessed(item));
       } else {
         cachedSelector = null;
       }
@@ -1565,7 +1711,7 @@
       for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
         const found = root.querySelectorAll(selector);
         if (found.length > 0) {
-          items = Array.from(found).filter(item => !_processedTiles.has(item) && !item.dataset.vinePriceProcessed);
+          items = Array.from(found).filter(item => !isTileProcessed(item));
           cachedSelector = selector;
           break;
         }
@@ -1764,14 +1910,12 @@
   // Apply color filter to all items on the page
   function applyColorFilterToAllItems() {
     // Re-use the single item logic which handles checks, 'seen' status updates, and auto-advance
-    const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
-    allItems.forEach(item => {
-      const badge = item.querySelector('.vine-price-badge');
-      if (badge) {
-        const color = badge.getAttribute('data-price-color');
-        if (color) {
-          applyColorFilter(item, color);
-        }
+    tileRegistry.forEach(item => {
+      if (!item.isConnected) return;
+      const s = tileStates.get(item);
+      if (!s) return;
+      if (s.color) {
+        applyColorFilter(item, s.color);
       } else if (isPreReleaseItem(item)) {
         // Handle pre-release items that didn't get a price badge (failed fetch)
         // We pass 'gray' as a dummy color, but applyColorFilter prioritizes isPreRelease check anyway
@@ -2803,9 +2947,12 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         }
       }
 
-      const pageItems = document.querySelectorAll('[data-vine-price-processed="true"]');
+      const pageItems = tileRegistry.filter(t => t.isConnected);
       let pageHidden = 0;
-      pageItems.forEach(item => { if (item.dataset.vineHidden === 'true') pageHidden++; });
+      pageItems.forEach(item => {
+        const s = tileStates.get(item);
+        if (s && s.hidden) pageHidden++;
+      });
 
       container.replaceChildren();
 
@@ -3400,13 +3547,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         autoAdvanceLoaded = true;
 
         // Update page
-        const allItems = document.querySelectorAll('[data-vine-price-processed="true"]');
-        allItems.forEach(item => {
-          const badge = item.querySelector('.vine-price-badge');
+        tileRegistry.forEach(item => {
+          if (!item.isConnected) return;
+          const s = tileStates.get(item);
+          const badge = s && s.badge;
           if (badge) {
-            // dataset holds the lowest price of a range — badge text may be "$a–$b"
-            const price = parseFloat(item.dataset.vinePrice);
-            if (!isNaN(price)) {
+            // state holds the lowest price of a range — badge text may be "$a–$b"
+            const price = s.price;
+            if (typeof price === 'number' && !isNaN(price)) {
               const color = getPriceColorSync(price);
               badge.className = `vine-price-badge vine-price-${color}`;
               badge.setAttribute('data-price-color', color);
@@ -3871,6 +4019,25 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
        Tokens above don't flip with prefers-color-scheme — that caused button text to go
        illegible on macOS dark-mode (v1.41.0 regression). */
 
+    /* Overlay layer: badges/highlights render here, at document coordinates
+       over each tile — never inside Amazon's tile subtree (writing anything
+       into a tile corrupts the item-request flow; see tileState). */
+    #vine-overlay-root {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 0;
+      height: 0;
+      overflow: visible;
+      pointer-events: none;
+      z-index: var(--vine-z-badge);
+    }
+
+    .vine-tile-overlay {
+      position: absolute;
+      pointer-events: none;
+    }
+
     .vine-price-badge {
       position: absolute;
       top: 6px;
@@ -3883,7 +4050,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       align-items: center;
       gap: 4px;
       box-shadow: 0 1px 2px rgba(15, 17, 17, 0.15);
-      z-index: var(--vine-z-badge);
+      pointer-events: auto;
     }
 
     .vine-price-badge:hover {
@@ -3932,11 +4099,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       text-decoration: underline;
     }
 
-    /* Keyword highlight — outline, not border (border shifts grid layout) */
-    .vine-keyword-highlight {
-      outline: 3px solid #C7511F !important;
+    /* Keyword highlight — an overlay box covering the tile, not a class on it */
+    .vine-tile-highlight {
+      position: absolute;
+      inset: 0;
+      outline: 3px solid #C7511F;
       outline-offset: -3px;
       box-shadow: 0 0 8px rgba(199, 81, 31, 0.5);
+      pointer-events: none;
     }
 
     /* Keyword chips in the settings modal */
@@ -4463,6 +4633,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       getHideCached(() => { });
       getColorFilter(() => { });
       processVineItems(true);
+      watchGridLayout(); // keep badge overlays glued to tiles across layout changes
 
       // Auto-sync if a GitHub token is configured. Cache-expiry cleanup is deferred in getCache.
       // Throttled to at most once per SYNC_MIN_INTERVAL across page loads/tabs
