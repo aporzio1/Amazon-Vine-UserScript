@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.48.0
+// @version      1.48.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -793,6 +793,16 @@
   //   { price, priceMax, isEtv } — from the API (plus child pages if it lacks taxValue)
   //   { price, approx: true }   — fell back to the parent page's default-child price
   //   null                      — nothing resolvable
+  // ===== TEMP DIAGNOSTIC (v1.48.1) — remove after testing. =====
+  // The item-request 403 survived every DOM isolation (v1.46.x–v1.48.0), and
+  // the recommendations-API prefetch landed in the same release window the
+  // 403s started (e6402e9, 11 min before d85f65a). recIds are per-render,
+  // session-bound tokens driven by the SAME endpoint the Request popover
+  // uses — the script touching them is the remaining suspect. This flag
+  // skips the prefetch entirely: parent tiles fall back to the /dp/ page
+  // price (marked approximate, no ETV/range) so everything else stays live.
+  const SKIP_REC_API_PREFETCH = true;
+
   function fetchParentPrices(recId, parentUrl, callback) {
     const origin = (() => {
       try { return new URL(parentUrl, location.href).origin; } catch (e) { return location.origin; }
@@ -803,6 +813,8 @@
         callback(data ? { price: data.price, approx: true } : null);
       });
     };
+
+    if (SKIP_REC_API_PREFETCH) return fallbackToParentPage();
 
     fetchVineRecommendation(recId, (result) => {
       if (!result) return fallbackToParentPage();
