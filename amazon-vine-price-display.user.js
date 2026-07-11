@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.48.1
+// @version      1.49.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -619,7 +619,6 @@
       if (isThrottled()) return; // a later trip extended the cooldown; its timer resumes
       removeThrottleIndicator();
       pumpDpQueue();
-      pumpVineApiQueue();
     }, cooldown + 50);
   }
 
@@ -737,123 +736,23 @@
     });
   }
 
-  // ---- Vine recommendations API (parent-ASIN listings) ----
+  // ---- Parent (multi-variant) listing prices ----
   // A parent tile's link goes to /dp/{parentAsin}, where Amazon renders the
-  // default child's buybox — which is how a $16.99 accessory merged into a
-  // $299 listing shows as $299. The recommendations API (the same endpoint the
-  // "See details" modal uses) reports which child variations Vine actually
-  // offers, and — when present — their ETV (taxValue).
-
-  const vineApiQueue = [];
-  let vineApiActive = 0;
-  const VINE_API_MAX_CONCURRENT = 2;
-
-  function pumpVineApiQueue() {
-    if (isThrottled()) return; // tripThrottle re-pumps after the cooldown
-    while (vineApiActive < VINE_API_MAX_CONCURRENT && vineApiQueue.length > 0) {
-      const task = vineApiQueue.shift();
-      vineApiActive++;
-      task(() => {
-        vineApiActive--;
-        pumpVineApiQueue();
-      });
-    }
-  }
-
-  function fetchVineRecommendation(recId, callback) {
-    vineApiQueue.push((done) => {
-      const url = `${location.origin}/vine/api/recommendations/${encodeURIComponent(recId)}`;
-      gmFetch({ url, headers: { 'Accept': 'application/json' } })
-        .then(res => {
-          done();
-          let json = null;
-          try { json = JSON.parse(res.responseText); } catch (e) { /* HTML error page */ }
-          callback(json && json.result ? json.result : null);
-        })
-        .catch(err => {
-          const retryAfter = parseRetryAfterMs(err.responseHeaders);
-          if (err.status === 429 || err.status === 503) {
-            tripThrottle(retryAfter, `vine API HTTP ${err.status}`);
-          }
-          // On 429, hold the slot until Retry-After elapses so we don't hammer the API.
-          setTimeout(done, err.status === 429 ? (retryAfter || 5000) : 0);
-          callback(null);
-        });
-    });
-    pumpVineApiQueue();
-  }
-
-  function numOrNull(v) {
-    const n = typeof v === 'string' ? parseFloat(v) : v;
-    return (typeof n === 'number' && isFinite(n) && n >= 0) ? n : null;
-  }
-
-  // Resolve the price (or range) of the variations Vine actually offers on a
-  // parent listing. Calls back with:
-  //   { price, priceMax, isEtv } — from the API (plus child pages if it lacks taxValue)
-  //   { price, approx: true }   — fell back to the parent page's default-child price
-  //   null                      — nothing resolvable
-  // ===== TEMP DIAGNOSTIC (v1.48.1) — remove after testing. =====
-  // The item-request 403 survived every DOM isolation (v1.46.x–v1.48.0), and
-  // the recommendations-API prefetch landed in the same release window the
-  // 403s started (e6402e9, 11 min before d85f65a). recIds are per-render,
-  // session-bound tokens driven by the SAME endpoint the Request popover
-  // uses — the script touching them is the remaining suspect. This flag
-  // skips the prefetch entirely: parent tiles fall back to the /dp/ page
-  // price (marked approximate, no ETV/range) so everything else stays live.
-  const SKIP_REC_API_PREFETCH = true;
-
-  function fetchParentPrices(recId, parentUrl, callback) {
-    const origin = (() => {
-      try { return new URL(parentUrl, location.href).origin; } catch (e) { return location.origin; }
-    })();
-
-    const fallbackToParentPage = () => {
-      fetchPrice(parentUrl, null, (data) => {
-        callback(data ? { price: data.price, approx: true } : null);
-      });
-    };
-
-    if (SKIP_REC_API_PREFETCH) return fallbackToParentPage();
-
-    fetchVineRecommendation(recId, (result) => {
-      if (!result) return fallbackToParentPage();
-      const variations = Array.isArray(result.variations) ? result.variations : [];
-
-      // Best case: ETV per variation — exact, and no page fetches needed.
-      const taxValues = [];
-      for (const v of variations) {
-        const tv = v && numOrNull(v.taxValue);
-        if (tv !== null) taxValues.push(tv);
-      }
-      const itemEtv = numOrNull(result.taxValue);
-      if (taxValues.length === 0 && itemEtv !== null) taxValues.push(itemEtv);
-      if (taxValues.length > 0) {
-        callback({ price: Math.min(...taxValues), priceMax: Math.max(...taxValues), isEtv: true });
-        return;
-      }
-
-      // No ETV in the response: probe the offered children's pages (capped).
-      const childAsins = variations
-        .map(v => v && v.asin)
-        .filter(a => /^[A-Z0-9]{10}$/i.test(a || ''))
-        .slice(0, 4);
-      if (childAsins.length === 0) return fallbackToParentPage();
-
-      const prices = [];
-      let pending = childAsins.length;
-      childAsins.forEach(childAsin => {
-        fetchPrice(`${origin}/dp/${childAsin}`, childAsin, (data) => {
-          if (data && !data.unreliable) prices.push(data.price);
-          if (--pending === 0) {
-            if (prices.length > 0) {
-              callback({ price: Math.min(...prices), priceMax: Math.max(...prices), isEtv: false });
-            } else {
-              fallbackToParentPage();
-            }
-          }
-        }, 0); // child probes: no retries
-      });
+  // default child's buybox — so the shown price can belong to a different
+  // variant than Vine offers. We surface that price marked APPROXIMATE (and
+  // never cache it); exact variant prices/ETV only come from the user opening
+  // Amazon's own "See details" modal.
+  //
+  // WARNING — never call /vine/api/recommendations/* from this script.
+  // recIds are per-render, session-bound tokens on the SAME endpoint the
+  // item-request flow drives. Prefetching them (v1.43–v1.48.0) made Amazon
+  // reject the user's real "Request product" with server-side 403s. That was
+  // root-caused by the v1.46–v1.48 bisection (PRs #6/#8) after every DOM
+  // theory failed — do not reintroduce a call to that endpoint, on-demand or
+  // otherwise.
+  function fetchParentPrices(parentUrl, callback) {
+    fetchPrice(parentUrl, null, (data) => {
+      callback(data ? { price: data.price, approx: true } : null);
     });
   }
 
@@ -1312,8 +1211,7 @@
         item,
         asin,
         url: link ? link.href : `${origin}/dp/${asin}`,
-        isParent: !!(detailsInput && detailsInput.dataset.isParentAsin === 'true'),
-        recId: detailsInput ? (detailsInput.dataset.recommendationId || null) : null
+        isParent: !!(detailsInput && detailsInput.dataset.isParentAsin === 'true')
       };
     }).filter(data => data && data.asin);
 
@@ -1332,7 +1230,7 @@
       getHideCached((shouldHide) => {
         const uncachedItems = [];
 
-        itemData.forEach(({ item, asin, url, isParent, recId }) => {
+        itemData.forEach(({ item, asin, url, isParent }) => {
           const cached = cachedResults[asin];
           // Entries cached before parent detection existed hold the parent
           // page's default-child price (the wrong product) — refetch them.
@@ -1367,11 +1265,11 @@
             if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
             const priorIsSeen = staleApproxEntry ? !!cached.isSeen : false;
-            uncachedItems.push({ item, asin, url, isParent, recId, priorIsSeen });
+            uncachedItems.push({ item, asin, url, isParent, priorIsSeen });
           }
         });
 
-        uncachedItems.forEach(({ item, asin, url, isParent, recId, priorIsSeen }) => {
+        uncachedItems.forEach(({ item, asin, url, isParent, priorIsSeen }) => {
           const fetchId = `${asin}-${Date.now()}`;
           activeFetches.set(asin, fetchId);
 
@@ -1427,8 +1325,8 @@
             }
           };
 
-          if (isParent && recId) {
-            fetchParentPrices(recId, url, handleResult);
+          if (isParent) {
+            fetchParentPrices(url, handleResult);
           } else {
             fetchPrice(url, asin, (data) => {
               if (data && data.unreliable) {
