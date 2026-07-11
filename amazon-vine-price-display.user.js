@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.47.1
+// @version      1.47.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -913,6 +913,16 @@
     return badge;
   }
 
+  // ===== TEMP DIAGNOSTIC (v1.47.2) — remove after testing. =====
+  // v1.47.1 (badges + applyColorFilter DOM writes off) still 403'd on the real
+  // Request-product click, and disabling the script entirely fixes it 100% of the
+  // time. Remaining suspect: the data-vine-* attributes / inline styles the script
+  // writes onto Amazon's tile nodes, which Amazon clones into the order popover and
+  // submits. This flag makes the script write NOTHING to tile nodes (dedup moves to
+  // a WeakSet) while keeping fetching/caching/UI on, to confirm the cause.
+  const DIAG_SKIP_TILE_WRITES = true;
+  const _processedTiles = new WeakSet();
+
   // Pre-release detection drives the "auto mark as seen" path when price fetch fails.
   // Memoized on item.dataset.vinePreRelease because the full text-normalization scan is expensive.
   function isPreReleaseItem(item) {
@@ -920,7 +930,7 @@
     if (item.dataset.vinePreRelease === 'false') return false;
 
     const result = computePreReleaseItem(item);
-    item.dataset.vinePreRelease = result ? 'true' : 'false';
+    if (!DIAG_SKIP_TILE_WRITES) item.dataset.vinePreRelease = result ? 'true' : 'false';
     return result;
   }
 
@@ -969,7 +979,7 @@
       const img = item.querySelector('img[alt]');
       title = img ? img.alt.trim() : '';
     }
-    item.dataset.vineTitle = title;
+    if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineTitle = title;
     return title;
   }
 
@@ -1011,8 +1021,10 @@
         state = 'highlight';
       }
     }
-    item.dataset.vineKwState = state;
-    item.dataset.vineKwRev = String(keywordListsRevision);
+    if (!DIAG_SKIP_TILE_WRITES) {
+      item.dataset.vineKwState = state;
+      item.dataset.vineKwRev = String(keywordListsRevision);
+    }
     return state;
   }
 
@@ -1141,9 +1153,11 @@
         try { origin = new URL(link.href, location.href).origin; } catch (e) { /* keep location.origin */ }
       }
       // Store ASIN on item immediately for consistency
-      item.dataset.vineAsin = asin;
-      if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
-        item.dataset.vineIsParent = 'true';
+      if (!DIAG_SKIP_TILE_WRITES) {
+        item.dataset.vineAsin = asin;
+        if (detailsInput && detailsInput.dataset.isParentAsin === 'true') {
+          item.dataset.vineIsParent = 'true';
+        }
       }
       return {
         item,
@@ -1160,10 +1174,14 @@
     const needsPositioning = itemData.length > 0 && getComputedStyle(itemData[0].item).position === 'static';
 
     itemData.forEach(({ item }) => {
-      if (needsPositioning) {
+      if (needsPositioning && !DIAG_SKIP_TILE_WRITES) {
         item.style.position = 'relative';
       }
-      item.dataset.vinePriceProcessed = 'true';
+      if (DIAG_SKIP_TILE_WRITES) {
+        _processedTiles.add(item);
+      } else {
+        item.dataset.vinePriceProcessed = 'true';
+      }
     });
 
     const asins = itemData.map(data => data.asin);
@@ -1182,13 +1200,15 @@
           // every reload just because we have to refetch its price.
           const staleApproxEntry = !!(cached && cached.approx === true);
           if (cached && !staleParentEntry && !staleApproxEntry && cached.price !== undefined && cached.price !== null) {
-            item.dataset.vineIsCached = 'true';
-            item.dataset.vinePrice = cached.price;
-            if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
-            if (cached.isEtv) item.dataset.vineIsEtv = 'true';
-            // Default to true for legacy cache entries without isSeen property
-            const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
-            item.dataset.vineSeen = String(isSeen);
+            if (!DIAG_SKIP_TILE_WRITES) {
+              item.dataset.vineIsCached = 'true';
+              item.dataset.vinePrice = cached.price;
+              if (cached.priceMax != null) item.dataset.vinePriceMax = cached.priceMax;
+              if (cached.isEtv) item.dataset.vineIsEtv = 'true';
+              // Default to true for legacy cache entries without isSeen property
+              const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
+              item.dataset.vineSeen = String(isSeen);
+            }
 
             const color = getPriceColorSync(cached.price);
             // TEMP DIAGNOSTIC: badge node injection disabled, see applyColorFilter.
@@ -1196,7 +1216,7 @@
           } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
             // Recently confirmed to have no price — skip the fetch and mirror
             // the live-failure behavior (pre-release tiles get hidden).
-            item.dataset.vineNoPrice = 'true';
+            if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineNoPrice = 'true';
             if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
           } else {
             const priorIsSeen = staleApproxEntry ? !!cached.isSeen : false;
@@ -1215,10 +1235,12 @@
               const color = getPriceColorSync(priceData.price);
 
               // Store price (lowest of a range) — filters/sort key off this
-              item.dataset.vinePrice = priceData.price;
-              if (priceData.priceMax != null) item.dataset.vinePriceMax = priceData.priceMax;
-              if (priceData.isEtv) item.dataset.vineIsEtv = 'true';
-              if (priceData.approx) item.dataset.vineApprox = 'true';
+              if (!DIAG_SKIP_TILE_WRITES) {
+                item.dataset.vinePrice = priceData.price;
+                if (priceData.priceMax != null) item.dataset.vinePriceMax = priceData.priceMax;
+                if (priceData.isEtv) item.dataset.vineIsEtv = 'true';
+                if (priceData.approx) item.dataset.vineApprox = 'true';
+              }
 
               // Calculate visibility (isSeen) based on filters
               getColorFilter((filter) => {
@@ -1239,7 +1261,7 @@
                 // Carry forward whether this tile was already marked seen in
                 // a prior session (relevant for approx tiles, which always
                 // land here since their price can't be served from cache).
-                item.dataset.vineSeen = priorIsSeen ? 'true' : 'false';
+                if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineSeen = priorIsSeen ? 'true' : 'false';
               });
 
               // TEMP DIAGNOSTIC: badge node injection disabled, see applyColorFilter.
@@ -1250,7 +1272,7 @@
               // this item doesn't re-fetch on every page load.
               if (!isThrottled()) {
                 setCachedPrice(asin, null, false, { noPrice: true, isParent });
-                item.dataset.vineNoPrice = 'true';
+                if (!DIAG_SKIP_TILE_WRITES) item.dataset.vineNoPrice = 'true';
               }
               // If price fetch failed but it IS a pre-release item
               if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
@@ -1533,7 +1555,7 @@
     if (cachedSelector) {
       const found = root.querySelectorAll(cachedSelector);
       if (found.length > 0) {
-        items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
+        items = Array.from(found).filter(item => !_processedTiles.has(item) && !item.dataset.vinePriceProcessed);
       } else {
         cachedSelector = null;
       }
@@ -1543,7 +1565,7 @@
       for (const selector of CONFIG.VINE_ITEM_SELECTORS) {
         const found = root.querySelectorAll(selector);
         if (found.length > 0) {
-          items = Array.from(found).filter(item => !item.dataset.vinePriceProcessed);
+          items = Array.from(found).filter(item => !_processedTiles.has(item) && !item.dataset.vinePriceProcessed);
           cachedSelector = selector;
           break;
         }
