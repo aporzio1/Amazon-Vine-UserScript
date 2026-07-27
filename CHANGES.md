@@ -1,5 +1,15 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.0 - Secure Google Login for Cloud Sync
+
+- **Feature**: Replaced manually copied GitHub personal access tokens and private Gists with Google login backed by Supabase Auth. Each browser keeps its own refreshable session and can be disconnected from Vine Tools.
+- **Security**: Sign-in uses authorization-code flow with PKCE, a random per-attempt state value, exact-origin `postMessage` validation, and a callback page with a restrictive Content Security Policy. Amazon sessions and AI provider keys are explicitly excluded from sync.
+- **Security**: Added a Supabase migration that enables Row Level Security for every sync document. Authenticated users can only select, create, or update their own rows; the publishable client key cannot bypass these policies.
+- **Fix**: Cloud writes now use revision-checked optimistic concurrency and retry conflicts instead of allowing two devices to silently overwrite the same document.
+- **Enhancement**: Price cache, saved searches, and keyword lists share one account-based sync operation with automatic session refresh, a connected-account display, and a per-device Disconnect action.
+- **Migration**: Added a one-time GitHub Gist importer in the Cloud Sync tab. It understands the previous cache, saved-search, and keyword formats, losslessly merges them with local and Supabase data, removes locally stored GitHub credentials after success, and leaves the original Gists untouched for rollback.
+- **Infrastructure**: Added and deployed the no-secret OAuth return page at `https://amazon-vine-sync-auth.pages.dev/`, plus `docs/supabase-sync-setup.md` for the remaining project and Google-provider configuration.
+
 ## Version 1.47.1 - TEMPORARY Diagnostic Build (badges/hide-style disabled)
 
 - **Diagnostic (temporary)**: v1.47.0 (MutationObserver removed) still 403'd on the real "Request product" click, falsifying the observer theory. This build disables badge-node injection (`item.appendChild(badge)`) and all `applyColorFilter` DOM effects (hide/style/class toggles) entirely — price detection, caching, and all UI panels/sync/keyboard nav/infinite scroll stay on. Isolates whether writing badge nodes / hide-style onto Amazon's tile elements at init time is the real trigger. Not a release; will be reverted (or made permanent if this is confirmed as the cause and no cleaner fix is found).

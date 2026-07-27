@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.49.0
+// @version      1.50.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -16,8 +16,12 @@
 // @match        https://www.amazon.com/*/review/create-review*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
+// @connect      *.supabase.co
+// @connect      api.github.com
+// @connect      gist.githubusercontent.com
 // @inject-into  content
 // @run-at       document-idle
 // ==/UserScript==
@@ -46,11 +50,18 @@
     CLAUDE_API_KEY: 'vine_claude_api_key',
     CLAUDE_MODEL: 'vine_claude_model',
     AI_PROVIDER: 'vine_ai_provider',
-    GITHUB_TOKEN_KEY: 'vine_github_token',
-    GIST_ID_KEY: 'vine_gist_id',
-    GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
-    GIST_KEYWORDS_ID_KEY: 'vine_gist_keywords_id',
+    SYNC_SESSION_KEY: 'vine_sync_session',
+    SYNC_AUTH_RESULT_PREFIX: 'vine_sync_auth_result_',
+    LEGACY_GITHUB_TOKEN_KEY: 'vine_github_token',
+    LEGACY_GIST_ID_KEY: 'vine_gist_id',
+    LEGACY_GIST_SEARCHES_ID_KEY: 'vine_gist_searches_id',
+    LEGACY_GIST_KEYWORDS_ID_KEY: 'vine_gist_keywords_id',
+    LEGACY_GITHUB_IMPORTED_AT_KEY: 'vine_github_imported_at',
     LAST_SYNC_KEY: 'vine_last_sync',
+    SUPABASE_URL: 'https://jlneekyaknmfciilobtw.supabase.co',
+    SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_sqh5s7rEqpHoEX4T8JkQFw_SDvH6OC1',
+    SUPABASE_AUTH_CALLBACK_URL: 'https://amazon-vine-sync-auth.pages.dev/',
+    SUPABASE_SYNC_TABLE: 'vine_sync_documents',
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // 12 hours — "no price" results
@@ -182,7 +193,57 @@
     }
   }
 
-  // ---- Network helpers (shared across OpenAI, GitHub Gist, and product-page fetches) ----
+  function deleteStorage(key) {
+    try {
+      if (typeof GM_deleteValue !== 'undefined') {
+        GM_deleteValue(key);
+        return;
+      }
+    } catch (e) {
+      console.warn(`GM_deleteValue failed for "${key}", falling back to localStorage:`, e);
+    }
+
+    try {
+      if (typeof GM_setValue !== 'undefined') {
+        GM_setValue(key, null);
+        return;
+      }
+    } catch (e) {
+      console.warn(`GM_setValue cleanup failed for "${key}", falling back to localStorage:`, e);
+    }
+
+    try {
+      localStorage.removeItem(STORAGE_PREFIX + key);
+    } catch (e) {
+      console.error(`Error deleting ${key}:`, e);
+    }
+  }
+
+  function captureSyncAuthFallback() {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    if (params.get('vine_sync_auth') !== '1') return false;
+
+    const state = params.get('state');
+    const code = params.get('code');
+    const error = params.get('error');
+    if (/^[A-Za-z0-9_-]{20,128}$/.test(state || '') && (code || error)) {
+      setStorage(`${CONFIG.SYNC_AUTH_RESULT_PREFIX}${state}`, {
+        code: code || null,
+        error: error || null,
+        createdAt: Date.now()
+      });
+    }
+
+    try {
+      history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
+    } catch (e) {
+      window.location.hash = '';
+    }
+    setTimeout(() => window.close(), 250);
+    return true;
+  }
+
+  // ---- Network helpers (shared across AI, Supabase, and product-page fetches) ----
   function gmFetch({ method = 'GET', url, headers, data }) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
@@ -221,20 +282,6 @@
   }
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-  function githubRequest(token, endpoint, method = 'GET', body = null) {
-    return gmFetch({
-      method,
-      url: `https://api.github.com/${endpoint}`,
-      headers: {
-        'Authorization': `token ${token}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'Content-Type': 'application/json'
-      },
-      data: body ? JSON.stringify(body) : null
-    }).then(r => JSON.parse(r.responseText))
-      .catch(err => { throw new Error(`GitHub API ${method} ${endpoint}: ${err.message}`); });
-  }
 
   // Temporary status banner wired to a specific DOM element. Returns a showStatus(message, isError) fn.
   function makeShowStatus(statusEl, timeoutMs = 3000) {
@@ -2501,316 +2548,642 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     wireCopy(copyBodyBtn, bodyDiv, 'body');
   }
 
-  // Cloud Sync (GitHub Gist)
+  // Cloud Sync (Supabase Auth + Row Level Security)
 
-  // Locate the gist holding fileName, or create it. The gist list is
-  // paginated (30/page by default) — without walking pages, users with many
-  // gists silently got a duplicate sync gist created on every new device.
-  async function findOrCreateGist(gh, fileName, description, initialContent) {
-    for (let page = 1; page <= 10; page++) {
-      const gists = await gh(`gists?per_page=100&page=${page}`);
-      if (!Array.isArray(gists) || gists.length === 0) break;
-      const existing = gists.find(g => g.files && g.files[fileName]);
-      if (existing) return existing.id;
-      if (gists.length < 100) break; // last page
-    }
-    const newGist = await gh('gists', 'POST', {
-      description,
-      public: false,
-      files: { [fileName]: { content: initialContent } }
-    });
-    return newGist.id;
-  }
-
-  async function syncWithGitHub(token) {
-    if (!token) throw new Error('No GitHub Token provided');
-
-    // Ensure any debounced writes land in memoryCache before we merge with remote.
-    flushCacheUpdates();
-
-    const gistFileName = 'vine_price_cache.json';
-    let gistId = getStorage(CONFIG.GIST_ID_KEY, null);
-    const gh = (endpoint, method, body) => githubRequest(token, endpoint, method, body);
-
+  function isSupabaseSyncConfigured() {
     try {
-      if (!gistId) {
-        gistId = await findOrCreateGist(gh, gistFileName, 'Amazon Vine Price Cache (Synced)', JSON.stringify({}));
-        setStorage(CONFIG.GIST_ID_KEY, gistId);
-      }
-
-      const gistData = await gh(`gists/${gistId}`);
-      let remoteCache = {};
-      const file = gistData.files && gistData.files[gistFileName];
-
-      if (file) {
-        if (file.truncated) {
-          console.log('[Vine Sync] Remote file truncated, fetching raw content...');
-          const raw = await gmFetch({ method: 'GET', url: file.raw_url });
-          remoteCache = JSON.parse(raw.responseText);
-        } else {
-          remoteCache = file.content ? JSON.parse(file.content) : {};
-        }
-      }
-
-      return new Promise((resolve) => {
-        getCache((localCache) => {
-          const now = Date.now();
-          const safeLocalCache = (localCache && typeof localCache === 'object' && !Array.isArray(localCache))
-            ? localCache
-            : {};
-          const mergedCache = (remoteCache && typeof remoteCache === 'object' && !Array.isArray(remoteCache))
-            ? { ...remoteCache }
-            : {};
-          let remoteNeedsUpdate = false;
-
-          for (const [asin, localEntry] of Object.entries(safeLocalCache)) {
-            if (!localEntry || typeof localEntry !== 'object') continue;
-            const localTimestamp = typeof localEntry.timestamp === 'number' ? localEntry.timestamp : 0;
-            if (now - localTimestamp > cacheTTL(localEntry)) continue;
-            const remoteEntry = mergedCache[asin];
-            const remoteTimestamp = remoteEntry && typeof remoteEntry === 'object' && typeof remoteEntry.timestamp === 'number'
-              ? remoteEntry.timestamp
-              : 0;
-            if (!remoteEntry || localTimestamp > remoteTimestamp) {
-              mergedCache[asin] = localEntry;
-              remoteNeedsUpdate = true;
-            }
-          }
-
-          const finalizeSync = async () => {
-            if (remoteNeedsUpdate) {
-              const mergedJson = JSON.stringify(mergedCache);
-              // Final byte-level guard: skip PATCH if merge equals what's already on Gist.
-              if (file && !file.truncated && file.content === mergedJson) {
-                console.log('[Vine Sync] Merge matches remote — skipping PATCH.');
-              } else {
-                console.log('[Vine Sync] Pushing updates to GitHub...');
-                await gh(`gists/${gistId}`, 'PATCH', {
-                  files: { [gistFileName]: { content: mergedJson } }
-                });
-              }
-            } else {
-              console.log('[Vine Sync] Remote is up to date.');
-            }
-
-            setCache(mergedCache, () => {
-              setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
-              resolve({ success: true, count: Object.keys(mergedCache).length });
-            });
-          };
-
-          finalizeSync().catch(err => {
-            console.error('Sync finalize failed:', err);
-            setCache(mergedCache);
-            resolve({ success: false, error: err });
-          });
-        });
-      });
-
-    } catch (error) {
-      console.error('Sync failed:', error);
-      throw error;
+      const projectUrl = new URL(CONFIG.SUPABASE_URL);
+      const callbackUrl = new URL(CONFIG.SUPABASE_AUTH_CALLBACK_URL);
+      return projectUrl.protocol === 'https:'
+        && projectUrl.hostname.endsWith('.supabase.co')
+        && callbackUrl.protocol === 'https:'
+        && Boolean(CONFIG.SUPABASE_PUBLISHABLE_KEY);
+    } catch (e) {
+      return false;
     }
   }
 
-  // Sync Saved Searches with GitHub Gist
-  async function syncSearchesWithGitHub(token) {
-    if (!token) throw new Error('No GitHub Token provided');
-
-    const gistFileName = 'vine_saved_searches.json';
-    let gistId = getStorage(CONFIG.GIST_SEARCHES_ID_KEY, null);
-    const gh = (endpoint, method, body) => githubRequest(token, endpoint, method, body);
-
-    try {
-      if (!gistId) {
-        gistId = await findOrCreateGist(
-          gh, gistFileName, 'Amazon Vine Saved Searches (Synced)',
-          JSON.stringify({ timestamp: Date.now(), searches: [] })
-        );
-        setStorage(CONFIG.GIST_SEARCHES_ID_KEY, gistId);
-      }
-
-      // Drop malformed/legacy entries (missing string `term`) so merge
-      // comparisons below can't throw on `.term.toLowerCase()`.
-      const normalizeSearches = (arr) => (Array.isArray(arr) ? arr : [])
-        .filter(s => s && typeof s === 'object' && typeof s.term === 'string');
-
-      const gistData = await gh(`gists/${gistId}`);
-      let remoteData = { timestamp: 0, searches: [] };
-      if (gistData.files && gistData.files[gistFileName]) {
-        try {
-          const parsedContent = JSON.parse(gistData.files[gistFileName].content);
-          // Handle old format (array) vs new format (object with timestamp)
-          if (Array.isArray(parsedContent)) {
-            remoteData = { timestamp: 0, searches: parsedContent };
-          } else if (parsedContent && typeof parsedContent === 'object') {
-            remoteData = {
-              timestamp: typeof parsedContent.timestamp === 'number' ? parsedContent.timestamp : 0,
-              searches: parsedContent.searches
-            };
-          }
-        } catch (e) {
-          console.error('Error parsing remote searches:', e);
-          remoteData = { timestamp: 0, searches: [] };
-        }
-      }
-      remoteData.searches = normalizeSearches(remoteData.searches);
-
-      // 3. Get local searches and timestamp
-      const localSearches = normalizeSearches(getStorage(CONFIG.SAVED_SEARCHES_KEY, []));
-      const localTimestamp = getStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, 0);
-
-      // 4. Determine which version is newer and merge
-      let finalSearches = [];
-      let shouldUpdateLocal = false;
-      let shouldUpdateRemote = false;
-
-      if (localTimestamp > remoteData.timestamp) {
-        // Local is newer - use local and push to remote
-        console.log('[Vine Searches Sync] Local is newer, pushing to remote');
-        finalSearches = [...localSearches];
-        shouldUpdateRemote = true;
-      } else if (remoteData.timestamp > localTimestamp) {
-        // Remote is newer - use remote and pull to local
-        console.log('[Vine Searches Sync] Remote is newer, pulling to local');
-        finalSearches = [...remoteData.searches];
-        shouldUpdateLocal = true;
-      } else {
-        // Same timestamp - merge by adding new items from each side
-        console.log('[Vine Searches Sync] Same timestamp, smart merging');
-        const localTerms = new Set(localSearches.map(s => s.term.toLowerCase()));
-        const remoteTerms = new Set(remoteData.searches.map(s => s.term.toLowerCase()));
-
-        // Start with local searches (preserving order)
-        finalSearches = [...localSearches];
-
-        // Add any remote searches that aren't in local
-        remoteData.searches.forEach(search => {
-          const key = search.term.toLowerCase();
-          if (!localTerms.has(key)) {
-            finalSearches.push(search);
-            shouldUpdateLocal = true;
-          }
-        });
-
-        // Check if local has items not in remote
-        localSearches.forEach(search => {
-          const key = search.term.toLowerCase();
-          if (!remoteTerms.has(key)) {
-            shouldUpdateRemote = true;
-          }
-        });
-      }
-
-      // 5. Persist — both sides must end on the SAME timestamp, or the next
-      // sync sees a fake "newer" side and re-pulls/pushes forever.
-      const mergedTimestamp = Math.max(localTimestamp, remoteData.timestamp) || Date.now();
-
-      if (shouldUpdateLocal) {
-        setStorage(CONFIG.SAVED_SEARCHES_KEY, finalSearches);
-        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, mergedTimestamp);
-      }
-
-      if (shouldUpdateRemote) {
-        const updateData = {
-          timestamp: mergedTimestamp,
-          searches: finalSearches
-        };
-        await gh(`gists/${gistId}`, 'PATCH', {
-          files: { [gistFileName]: { content: JSON.stringify(updateData) } }
-        });
-        setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, mergedTimestamp);
-      }
-
-      return { success: true, count: finalSearches.length };
-
-    } catch (error) {
-      console.error('Searches sync failed:', error);
-      throw error;
+  function requireSupabaseSyncConfig() {
+    if (!isSupabaseSyncConfigured()) {
+      throw new Error('Cloud Sync is not configured in this build');
     }
   }
 
-  // Sync Keyword Lists with GitHub Gist (last-write-wins by timestamp;
-  // equal timestamps union-merge both sides).
-  async function syncKeywordsWithGitHub(token) {
-    if (!token) throw new Error('No GitHub Token provided');
-
-    const gistFileName = 'vine_keyword_lists.json';
-    let gistId = getStorage(CONFIG.GIST_KEYWORDS_ID_KEY, null);
-    const gh = (endpoint, method, body) => githubRequest(token, endpoint, method, body);
-
+  function parseSupabaseError(error, fallback) {
     try {
-      if (!gistId) {
-        gistId = await findOrCreateGist(
-          gh, gistFileName, 'Amazon Vine Keyword Lists (Synced)',
-          JSON.stringify({ timestamp: 0, highlight: [], block: [] })
-        );
-        setStorage(CONFIG.GIST_KEYWORDS_ID_KEY, gistId);
-      }
+      const body = JSON.parse(error.responseText || '{}');
+      return new Error(body.msg || body.message || body.error_description || body.error || fallback);
+    } catch (e) {
+      return new Error(fallback || error.message || 'Supabase request failed');
+    }
+  }
 
-      const gistData = await gh(`gists/${gistId}`);
-      let remoteData = { timestamp: 0, highlight: [], block: [] };
-      if (gistData.files && gistData.files[gistFileName]) {
-        try {
-          const parsed = JSON.parse(gistData.files[gistFileName].content);
-          remoteData = {
-            timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : 0,
-            highlight: Array.isArray(parsed.highlight) ? parsed.highlight : [],
-            block: Array.isArray(parsed.block) ? parsed.block : []
-          };
-        } catch (e) {
-          console.error('Error parsing remote keyword lists:', e);
+  function bytesToBase64Url(bytes) {
+    let binary = '';
+    bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function randomBase64Url(byteLength = 32) {
+    return bytesToBase64Url(crypto.getRandomValues(new Uint8Array(byteLength)));
+  }
+
+  async function createPkceChallenge(verifier) {
+    const encoded = new TextEncoder().encode(verifier);
+    const digest = await crypto.subtle.digest('SHA-256', encoded);
+    return bytesToBase64Url(new Uint8Array(digest));
+  }
+
+  function saveSyncSession(session) {
+    const normalized = {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      expires_at: session.expires_at || (Math.floor(Date.now() / 1000) + session.expires_in),
+      user: session.user ? {
+        id: session.user.id,
+        email: session.user.email || '',
+        name: session.user.user_metadata && (
+          session.user.user_metadata.full_name || session.user.user_metadata.name
+        ) || ''
+      } : null
+    };
+    setStorage(CONFIG.SYNC_SESSION_KEY, normalized);
+    return normalized;
+  }
+
+  function getStoredSyncSession() {
+    const session = getStorage(CONFIG.SYNC_SESSION_KEY, null);
+    return session && session.access_token && session.refresh_token ? session : null;
+  }
+
+  let syncRefreshPromise = null;
+
+  async function refreshSyncSession() {
+    if (syncRefreshPromise) return syncRefreshPromise;
+    const current = getStoredSyncSession();
+    if (!current) throw new Error('Connect Cloud Sync first');
+
+    syncRefreshPromise = gmFetch({
+      method: 'POST',
+      url: `${CONFIG.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,
+      headers: {
+        'apikey': CONFIG.SUPABASE_PUBLISHABLE_KEY,
+        'Authorization': `Bearer ${CONFIG.SUPABASE_PUBLISHABLE_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      data: JSON.stringify({ refresh_token: current.refresh_token })
+    }).then(response => saveSyncSession(JSON.parse(response.responseText)))
+      .catch(error => {
+        if (error.status === 400 || error.status === 401) {
+          setStorage(CONFIG.SYNC_SESSION_KEY, null);
         }
-      }
+        throw parseSupabaseError(error, 'Cloud Sync session expired; connect again');
+      })
+      .finally(() => { syncRefreshPromise = null; });
 
-      const localLists = getKeywordListsSync();
-      const localTimestamp = getStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, 0);
+    return syncRefreshPromise;
+  }
 
-      const applyLocal = (lists, timestamp) => {
-        cachedKeywordLists = lists;
-        keywordListsRevision++;
-        setStorage(CONFIG.KEYWORD_LISTS_KEY, lists);
-        setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, timestamp);
-        applyColorFilterToAllItems();
+  async function getValidSyncSession() {
+    requireSupabaseSyncConfig();
+    const session = getStoredSyncSession();
+    if (!session) throw new Error('Connect Cloud Sync first');
+    if ((session.expires_at || 0) > Math.floor(Date.now() / 1000) + 90) return session;
+    return refreshSyncSession();
+  }
+
+  async function connectSupabase() {
+    requireSupabaseSyncConfig();
+    if (typeof crypto === 'undefined' || !crypto.subtle) {
+      throw new Error('This browser does not support secure PKCE sign-in');
+    }
+
+    const verifier = randomBase64Url(56);
+    const challenge = await createPkceChallenge(verifier);
+    const state = randomBase64Url(24);
+    const authResultKey = `${CONFIG.SYNC_AUTH_RESULT_PREFIX}${state}`;
+    deleteStorage(authResultKey);
+    const callbackUrl = new URL(CONFIG.SUPABASE_AUTH_CALLBACK_URL);
+    callbackUrl.searchParams.set('origin', window.location.origin);
+    callbackUrl.searchParams.set('state', state);
+
+    const authorizeUrl = new URL(`${CONFIG.SUPABASE_URL}/auth/v1/authorize`);
+    authorizeUrl.searchParams.set('provider', 'google');
+    authorizeUrl.searchParams.set('redirect_to', callbackUrl.href);
+    authorizeUrl.searchParams.set('code_challenge', challenge);
+    authorizeUrl.searchParams.set('code_challenge_method', 's256');
+    authorizeUrl.searchParams.set('prompt', 'select_account');
+
+    const popup = window.open(
+      authorizeUrl.href,
+      'vine-sync-auth',
+      'popup=yes,width=520,height=720,resizable=yes,scrollbars=yes'
+    );
+    if (!popup) throw new Error('Allow pop-ups to connect Cloud Sync');
+
+    const authCode = await new Promise((resolve, reject) => {
+      const callbackOrigin = new URL(CONFIG.SUPABASE_AUTH_CALLBACK_URL).origin;
+      let resultPoll = null;
+      const timeout = setTimeout(() => {
+        cleanup();
+        deleteStorage(authResultKey);
+        reject(new Error('Sign-in timed out; please try again'));
+      }, 5 * 60 * 1000);
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        if (resultPoll) clearInterval(resultPoll);
+        window.removeEventListener('message', onMessage);
       };
 
-      let finalLists;
-      if (localTimestamp > remoteData.timestamp) {
-        finalLists = localLists;
-        await gh(`gists/${gistId}`, 'PATCH', {
-          files: { [gistFileName]: { content: JSON.stringify({ timestamp: localTimestamp, ...localLists }) } }
+      const finish = (data) => {
+        cleanup();
+        deleteStorage(authResultKey);
+        if (data.error || !data.code) {
+          reject(new Error(data.error || 'Sign-in did not return an authorization code'));
+          return;
+        }
+        resolve(data.code);
+      };
+
+      const onMessage = (event) => {
+        if (event.origin !== callbackOrigin || event.source !== popup) return;
+        const data = event.data;
+        if (!data || data.type !== 'vine-supabase-auth' || data.state !== state) return;
+        finish(data);
+      };
+
+      window.addEventListener('message', onMessage);
+      resultPoll = setInterval(() => {
+        const result = getStorage(authResultKey, null);
+        if (!result || Date.now() - result.createdAt > 5 * 60 * 1000) return;
+        finish(result);
+      }, 500);
+    });
+
+    try { popup.close(); } catch (e) { /* popup may already be closed */ }
+
+    let response;
+    try {
+      response = await gmFetch({
+        method: 'POST',
+        url: `${CONFIG.SUPABASE_URL}/auth/v1/token?grant_type=pkce`,
+        headers: {
+          'apikey': CONFIG.SUPABASE_PUBLISHABLE_KEY,
+          'Authorization': `Bearer ${CONFIG.SUPABASE_PUBLISHABLE_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        data: JSON.stringify({ auth_code: authCode, code_verifier: verifier })
+      });
+    } catch (error) {
+      throw parseSupabaseError(error, 'Could not finish Cloud Sync sign-in');
+    }
+
+    return saveSyncSession(JSON.parse(response.responseText));
+  }
+
+  async function disconnectSupabase() {
+    const session = getStoredSyncSession();
+    setStorage(CONFIG.SYNC_SESSION_KEY, null);
+    if (!session || !isSupabaseSyncConfigured()) return;
+    try {
+      await gmFetch({
+        method: 'POST',
+        url: `${CONFIG.SUPABASE_URL}/auth/v1/logout?scope=local`,
+        headers: {
+          'apikey': CONFIG.SUPABASE_PUBLISHABLE_KEY,
+          'Authorization': `Bearer ${session.access_token}`
+        }
+      });
+    } catch (error) {
+      console.warn('[Vine Sync] Remote sign-out failed; local session was removed:', error);
+    }
+  }
+
+  async function supabaseDataRequest(path, method = 'GET', body = null, canRefresh = true) {
+    const session = await getValidSyncSession();
+    try {
+      const response = await gmFetch({
+        method,
+        url: `${CONFIG.SUPABASE_URL}/rest/v1/${path}`,
+        headers: {
+          'apikey': CONFIG.SUPABASE_PUBLISHABLE_KEY,
+          'Authorization': `Bearer ${session.access_token}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Prefer': 'return=representation'
+        },
+        data: body === null ? null : JSON.stringify(body)
+      });
+      return response.responseText ? JSON.parse(response.responseText) : null;
+    } catch (error) {
+      if (error.status === 401 && canRefresh) {
+        await refreshSyncSession();
+        return supabaseDataRequest(path, method, body, false);
+      }
+      throw parseSupabaseError(error, 'Cloud Sync request failed');
+    }
+  }
+
+  async function fetchSyncDocument(kind) {
+    const table = encodeURIComponent(CONFIG.SUPABASE_SYNC_TABLE);
+    const rows = await supabaseDataRequest(
+      `${table}?select=payload,revision&kind=eq.${encodeURIComponent(kind)}`
+    );
+    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  }
+
+  async function replaceSyncDocument(kind, payload, expectedRevision) {
+    const result = await supabaseDataRequest('rpc/replace_vine_sync_document', 'POST', {
+      p_kind: kind,
+      p_payload: payload,
+      p_expected_revision: expectedRevision
+    });
+    const row = Array.isArray(result) ? result[0] : result;
+    return Boolean(row && row.applied);
+  }
+
+  async function syncDocument(kind, mergePayload, applyLocal) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const row = await fetchSyncDocument(kind);
+      const remotePayload = row && row.payload && typeof row.payload === 'object'
+        ? row.payload
+        : {};
+      const merged = await mergePayload(remotePayload);
+
+      if (JSON.stringify(merged.payload) === JSON.stringify(remotePayload)) {
+        await applyLocal(merged.payload);
+        return { success: true, count: merged.count };
+      }
+
+      const applied = await replaceSyncDocument(kind, merged.payload, row ? row.revision : 0);
+      if (applied) {
+        await applyLocal(merged.payload);
+        return { success: true, count: merged.count };
+      }
+    }
+    throw new Error(`Cloud Sync conflict for ${kind}; please retry`);
+  }
+
+  function getCacheAsync() {
+    return new Promise(resolve => getCache(resolve));
+  }
+
+  async function syncCacheWithSupabase() {
+    flushCacheUpdates();
+    const localCache = await getCacheAsync();
+    return syncDocument('price_cache', (remoteCache) => {
+      const now = Date.now();
+      const safeLocal = localCache && typeof localCache === 'object' && !Array.isArray(localCache)
+        ? localCache
+        : {};
+      const safeRemote = remoteCache && typeof remoteCache === 'object' && !Array.isArray(remoteCache)
+        ? remoteCache
+        : {};
+      const mergedCache = {};
+
+      for (const [asin, entry] of Object.entries(safeRemote)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const timestamp = typeof entry.timestamp === 'number' ? entry.timestamp : 0;
+        if (now - timestamp <= cacheTTL(entry)) mergedCache[asin] = entry;
+      }
+
+      for (const [asin, entry] of Object.entries(safeLocal)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const localTimestamp = typeof entry.timestamp === 'number' ? entry.timestamp : 0;
+        if (now - localTimestamp > cacheTTL(entry)) continue;
+        const remoteTimestamp = mergedCache[asin] && typeof mergedCache[asin].timestamp === 'number'
+          ? mergedCache[asin].timestamp
+          : 0;
+        if (!mergedCache[asin] || localTimestamp > remoteTimestamp) mergedCache[asin] = entry;
+      }
+
+      return { payload: mergedCache, count: Object.keys(mergedCache).length };
+    }, (mergedCache) => new Promise(resolve => setCache(mergedCache, resolve)));
+  }
+
+  const normalizeSearches = (searches) => (Array.isArray(searches) ? searches : [])
+    .filter(search => search && typeof search === 'object' && typeof search.term === 'string');
+
+  async function syncSearchesWithSupabase() {
+    const localSearches = normalizeSearches(getStorage(CONFIG.SAVED_SEARCHES_KEY, []));
+    const localTimestamp = getStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, 0);
+
+    return syncDocument('saved_searches', (remote) => {
+      const remoteSearches = normalizeSearches(remote.searches);
+      const remoteTimestamp = typeof remote.timestamp === 'number' ? remote.timestamp : 0;
+      let finalSearches;
+
+      if (localTimestamp > remoteTimestamp) {
+        finalSearches = localSearches;
+      } else if (remoteTimestamp > localTimestamp) {
+        finalSearches = remoteSearches;
+      } else {
+        const localTerms = new Set(localSearches.map(search => search.term.toLowerCase()));
+        finalSearches = [...localSearches];
+        remoteSearches.forEach(search => {
+          if (!localTerms.has(search.term.toLowerCase())) finalSearches.push(search);
         });
-      } else if (remoteData.timestamp > localTimestamp) {
-        finalLists = { highlight: remoteData.highlight, block: remoteData.block };
-        applyLocal(finalLists, remoteData.timestamp);
+      }
+
+      return {
+        payload: {
+          timestamp: Math.max(localTimestamp, remoteTimestamp) || Date.now(),
+          searches: finalSearches
+        },
+        count: finalSearches.length
+      };
+    }, (payload) => {
+      setStorage(CONFIG.SAVED_SEARCHES_KEY, payload.searches);
+      setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, payload.timestamp);
+    });
+  }
+
+  async function syncKeywordsWithSupabase() {
+    const localLists = getKeywordListsSync();
+    const localTimestamp = getStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, 0);
+
+    return syncDocument('keyword_lists', (remote) => {
+      const remoteLists = {
+        highlight: Array.isArray(remote.highlight) ? remote.highlight : [],
+        block: Array.isArray(remote.block) ? remote.block : []
+      };
+      const remoteTimestamp = typeof remote.timestamp === 'number' ? remote.timestamp : 0;
+      let finalLists;
+
+      if (localTimestamp > remoteTimestamp) {
+        finalLists = localLists;
+      } else if (remoteTimestamp > localTimestamp) {
+        finalLists = remoteLists;
       } else {
         const union = (a, b) => Array.from(new Set([...a, ...b]));
         finalLists = {
-          highlight: union(localLists.highlight, remoteData.highlight),
-          block: union(localLists.block, remoteData.block)
+          highlight: union(localLists.highlight, remoteLists.highlight),
+          block: union(localLists.block, remoteLists.block)
         };
-        const changedLocal = finalLists.highlight.length !== localLists.highlight.length
-          || finalLists.block.length !== localLists.block.length;
-        const changedRemote = finalLists.highlight.length !== remoteData.highlight.length
-          || finalLists.block.length !== remoteData.block.length;
-        // Both sides must land on the same timestamp after a merge, or the
-        // next sync misreads one side as newer and re-syncs forever.
-        const mergedTimestamp = Math.max(localTimestamp, remoteData.timestamp) || Date.now();
-        if (changedLocal) applyLocal(finalLists, mergedTimestamp);
-        if (changedRemote) {
-          await gh(`gists/${gistId}`, 'PATCH', {
-            files: { [gistFileName]: { content: JSON.stringify({ timestamp: mergedTimestamp, ...finalLists }) } }
+      }
+
+      return {
+        payload: {
+          timestamp: Math.max(localTimestamp, remoteTimestamp) || Date.now(),
+          ...finalLists
+        },
+        count: finalLists.highlight.length + finalLists.block.length
+      };
+    }, (payload) => {
+      cachedKeywordLists = {
+        highlight: payload.highlight,
+        block: payload.block
+      };
+      keywordListsRevision++;
+      setStorage(CONFIG.KEYWORD_LISTS_KEY, cachedKeywordLists);
+      setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, payload.timestamp);
+      applyColorFilterToAllItems();
+    });
+  }
+
+  async function syncAllWithSupabase() {
+    const [cacheResult, searchesResult, keywordsResult] = await Promise.all([
+      syncCacheWithSupabase(),
+      syncSearchesWithSupabase(),
+      syncKeywordsWithSupabase()
+    ]);
+    setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
+    return { cacheResult, searchesResult, keywordsResult };
+  }
+
+  const LEGACY_GIST_SPECS = [
+    {
+      kind: 'price_cache',
+      fileName: 'vine_price_cache.json',
+      storageKey: CONFIG.LEGACY_GIST_ID_KEY
+    },
+    {
+      kind: 'saved_searches',
+      fileName: 'vine_saved_searches.json',
+      storageKey: CONFIG.LEGACY_GIST_SEARCHES_ID_KEY
+    },
+    {
+      kind: 'keyword_lists',
+      fileName: 'vine_keyword_lists.json',
+      storageKey: CONFIG.LEGACY_GIST_KEYWORDS_ID_KEY
+    }
+  ];
+
+  function parseLegacyGithubError(error, fallback) {
+    try {
+      const body = JSON.parse(error.responseText || '{}');
+      return new Error(body.message || fallback);
+    } catch (e) {
+      return new Error(fallback || error.message || 'GitHub import failed');
+    }
+  }
+
+  async function legacyGithubRequest(token, endpoint) {
+    try {
+      const response = await gmFetch({
+        method: 'GET',
+        url: `https://api.github.com/${endpoint}`,
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': `Bearer ${token}`,
+          'X-GitHub-Api-Version': '2022-11-28'
+        }
+      });
+      return JSON.parse(response.responseText || 'null');
+    } catch (error) {
+      throw parseLegacyGithubError(error, 'Could not read the legacy GitHub Gists');
+    }
+  }
+
+  async function discoverLegacyGistIds(token) {
+    const discovered = {};
+    for (let page = 1; page <= 10; page++) {
+      const gists = await legacyGithubRequest(token, `gists?per_page=100&page=${page}`);
+      if (!Array.isArray(gists) || gists.length === 0) break;
+
+      LEGACY_GIST_SPECS.forEach(spec => {
+        if (discovered[spec.kind]) return;
+        const gist = gists.find(item => item.files && item.files[spec.fileName]);
+        if (gist) discovered[spec.kind] = gist.id;
+      });
+
+      if (Object.keys(discovered).length === LEGACY_GIST_SPECS.length || gists.length < 100) {
+        break;
+      }
+    }
+    return discovered;
+  }
+
+  async function readLegacyGistDocument(token, spec, discoveredId) {
+    const candidates = Array.from(new Set([
+      getStorage(spec.storageKey, null),
+      discoveredId
+    ].filter(Boolean)));
+    let lastRequestError = null;
+
+    for (const gistId of candidates) {
+      let gist;
+      try {
+        gist = await legacyGithubRequest(token, `gists/${encodeURIComponent(gistId)}`);
+      } catch (error) {
+        lastRequestError = error;
+        continue;
+      }
+      lastRequestError = null;
+
+      const file = gist && gist.files && gist.files[spec.fileName];
+      if (!file) continue;
+
+      let content = file.content || '';
+      if (file.truncated) {
+        try {
+          const raw = await gmFetch({
+            method: 'GET',
+            url: file.raw_url,
+            headers: { 'Authorization': `Bearer ${token}` }
           });
-          setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, mergedTimestamp);
+          content = raw.responseText;
+        } catch (error) {
+          throw parseLegacyGithubError(error, `Could not download ${spec.fileName}`);
         }
       }
 
-      return { success: true, count: finalLists.highlight.length + finalLists.block.length };
-
-    } catch (error) {
-      console.error('Keywords sync failed:', error);
-      throw error;
+      try {
+        return content ? JSON.parse(content) : {};
+      } catch (error) {
+        throw new Error(`${spec.fileName} contains invalid JSON`);
+      }
     }
+    if (lastRequestError) throw lastRequestError;
+    return null;
+  }
+
+  const normalizeKeywordArray = (values) => (Array.isArray(values) ? values : [])
+    .filter(value => typeof value === 'string' && value.trim())
+    .map(value => value.trim().toLowerCase());
+
+  async function importLegacyGithubSync(token) {
+    if (!token) throw new Error('Enter the GitHub token used by the previous sync');
+    await getValidSyncSession();
+
+    const discoveredIds = await discoverLegacyGistIds(token);
+    const entries = await Promise.all(LEGACY_GIST_SPECS.map(async spec => [
+      spec.kind,
+      await readLegacyGistDocument(token, spec, discoveredIds[spec.kind])
+    ]));
+    const legacy = Object.fromEntries(entries);
+    const foundKinds = entries.filter(([, payload]) => payload !== null).map(([kind]) => kind);
+    if (foundKinds.length === 0) {
+      throw new Error('No Amazon Vine sync Gists were found for this token');
+    }
+
+    const localCache = await getCacheAsync();
+    const localSearches = normalizeSearches(getStorage(CONFIG.SAVED_SEARCHES_KEY, []));
+    const localSearchTimestamp = getStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, 0);
+    const localKeywords = getKeywordListsSync();
+    const localKeywordTimestamp = getStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, 0);
+    const migrationTimestamp = Date.now();
+
+    const legacyCache = legacy.price_cache && typeof legacy.price_cache === 'object'
+      && !Array.isArray(legacy.price_cache) ? legacy.price_cache : {};
+    const legacySearchPayload = Array.isArray(legacy.saved_searches)
+      ? { timestamp: 0, searches: legacy.saved_searches }
+      : legacy.saved_searches || {};
+    const legacyKeywordPayload = legacy.keyword_lists || {};
+
+    const cacheResult = await syncDocument('price_cache', (remoteCache) => {
+      const now = Date.now();
+      const mergedCache = {};
+      [remoteCache, localCache, legacyCache].forEach(cache => {
+        if (!cache || typeof cache !== 'object' || Array.isArray(cache)) return;
+        Object.entries(cache).forEach(([asin, entry]) => {
+          if (!entry || typeof entry !== 'object') return;
+          const timestamp = typeof entry.timestamp === 'number' ? entry.timestamp : 0;
+          if (now - timestamp > cacheTTL(entry)) return;
+          const currentTimestamp = mergedCache[asin]
+            && typeof mergedCache[asin].timestamp === 'number'
+            ? mergedCache[asin].timestamp
+            : 0;
+          if (!mergedCache[asin] || timestamp > currentTimestamp) mergedCache[asin] = entry;
+        });
+      });
+      return { payload: mergedCache, count: Object.keys(mergedCache).length };
+    }, mergedCache => new Promise(resolve => setCache(mergedCache, resolve)));
+
+    const searchesResult = await syncDocument('saved_searches', (remote) => {
+      const mergedSearches = [];
+      const seenTerms = new Set();
+      [
+        localSearches,
+        normalizeSearches(legacySearchPayload.searches),
+        normalizeSearches(remote.searches)
+      ].forEach(searches => searches.forEach(search => {
+        const term = search.term.toLowerCase();
+        if (seenTerms.has(term)) return;
+        seenTerms.add(term);
+        mergedSearches.push(search);
+      }));
+      return {
+        payload: {
+          timestamp: Math.max(
+            migrationTimestamp,
+            localSearchTimestamp,
+            typeof legacySearchPayload.timestamp === 'number' ? legacySearchPayload.timestamp : 0,
+            typeof remote.timestamp === 'number' ? remote.timestamp : 0
+          ),
+          searches: mergedSearches
+        },
+        count: mergedSearches.length
+      };
+    }, payload => {
+      setStorage(CONFIG.SAVED_SEARCHES_KEY, payload.searches);
+      setStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, payload.timestamp);
+    });
+
+    const keywordsResult = await syncDocument('keyword_lists', (remote) => {
+      const union = (...lists) => Array.from(new Set(lists.flatMap(normalizeKeywordArray)));
+      const highlight = union(
+        localKeywords.highlight,
+        legacyKeywordPayload.highlight,
+        remote.highlight
+      );
+      const block = union(
+        localKeywords.block,
+        legacyKeywordPayload.block,
+        remote.block
+      );
+      return {
+        payload: {
+          timestamp: Math.max(
+            migrationTimestamp,
+            localKeywordTimestamp,
+            typeof legacyKeywordPayload.timestamp === 'number' ? legacyKeywordPayload.timestamp : 0,
+            typeof remote.timestamp === 'number' ? remote.timestamp : 0
+          ),
+          highlight,
+          block
+        },
+        count: highlight.length + block.length
+      };
+    }, payload => {
+      cachedKeywordLists = { highlight: payload.highlight, block: payload.block };
+      keywordListsRevision++;
+      setStorage(CONFIG.KEYWORD_LISTS_KEY, cachedKeywordLists);
+      setStorage(CONFIG.KEYWORD_LISTS_TIMESTAMP_KEY, payload.timestamp);
+      applyColorFilterToAllItems();
+    });
+
+    setStorage(CONFIG.LAST_SYNC_KEY, migrationTimestamp);
+    setStorage(CONFIG.LEGACY_GITHUB_IMPORTED_AT_KEY, migrationTimestamp);
+    [
+      CONFIG.LEGACY_GITHUB_TOKEN_KEY,
+      CONFIG.LEGACY_GIST_ID_KEY,
+      CONFIG.LEGACY_GIST_SEARCHES_ID_KEY,
+      CONFIG.LEGACY_GIST_KEYWORDS_ID_KEY
+    ].forEach(deleteStorage);
+
+    return { cacheResult, searchesResult, keywordsResult, foundKinds };
   }
 
 
@@ -3071,7 +3444,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       const autoAdvanceEnabled = getStorage(CONFIG.AUTO_ADVANCE_KEY, false);
       const savedSearches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
-      const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
+      const syncSession = getStoredSyncSession();
+      const syncConfigured = isSupabaseSyncConfigured();
       const lastSyncTime = getStorage(CONFIG.LAST_SYNC_KEY, 0);
       const aiProvider = getStorage(CONFIG.AI_PROVIDER, 'openai');
       const externalLinks = getStorage(CONFIG.EXTERNAL_LINKS_KEY, true);
@@ -3261,27 +3635,44 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
         <div id="content-sync" class="vine-tab-content" style="display: none;">
           <div style="margin-bottom: 24px;">
-            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">Cloud Sync (GitHub Gist)</label>
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--vine-fg);">Cloud Sync</label>
             <div style="background: var(--vine-surface); border: 1px solid var(--vine-border); color: var(--vine-fg); padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;">
-              Sync your price cache across multiple devices using a private GitHub Gist.
+              Sign in with Google to securely sync your price cache, saved searches, and keywords across devices.
             </div>
-            
-            <div style="margin-bottom: 16px;">
-              <label style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">GitHub Personal Access Token:</label>
-              <input type="password" id="vine-github-token"
-                placeholder="ghp_..."
-                style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
-              <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 4px;">
-                Token requires <strong>gist</strong> permission. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Vine%20Price%20Scaler" target="_blank" style="color: var(--vine-link);">Generate Token</a>
+
+            <div style="display: flex; align-items: center; gap: 10px; padding: 12px; margin-bottom: 16px; border: 1px solid var(--vine-border); border-radius: 6px;">
+              <div aria-hidden="true" style="display: grid; place-items: center; width: 34px; height: 34px; flex: none; color: #fff; background: #0D766E; border-radius: 50%; font-weight: 700;">V</div>
+              <div style="min-width: 0;">
+                <div id="vine-sync-account-status" style="font-weight: 600; color: var(--vine-fg);">Not connected</div>
+                <div id="vine-sync-account-email" style="overflow: hidden; color: var(--vine-fg-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap;"></div>
               </div>
             </div>
 
             <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px;">
+              <button type="button" id="vine-sync-connect-btn" class="vine-btn-primary" style="flex: 1;">Connect with Google</button>
               <button type="button" id="vine-sync-btn" class="vine-btn-primary" style="flex: 1;">🔄 Sync Now</button>
+              <button type="button" id="vine-sync-disconnect-btn" class="vine-btn-secondary">Disconnect</button>
             </div>
 
             <div id="vine-sync-status" role="status" aria-live="polite" style="font-size: 12px; color: var(--vine-fg-muted); text-align: center;">
               ${lastSyncTime ? `Last synced: ${new Date(lastSyncTime).toLocaleString()}` : 'Never synced'}
+            </div>
+            <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 10px; text-align: center;">
+              Only Vine cache data, searches, and keywords are synced. Amazon sessions and AI API keys stay on this device.
+            </div>
+
+            <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--vine-border);">
+              <label for="vine-legacy-github-token" style="display: block; margin-bottom: 4px; font-weight: 600; color: var(--vine-fg);">Moving from GitHub Gists?</label>
+              <div style="font-size: 12px; color: var(--vine-fg-muted); margin-bottom: 10px;">
+                Import the old price cache, saved searches, and keyword lists once. Your Gists remain as a backup.
+              </div>
+              <input type="password" id="vine-legacy-github-token"
+                autocomplete="off" placeholder="Legacy GitHub token"
+                style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; margin-bottom: 8px;">
+              <button type="button" id="vine-legacy-import-btn" class="vine-btn-secondary" style="width: 100%;">Import legacy Gists</button>
+              <div id="vine-legacy-import-note" style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 8px;">
+                The token is used only for this import and removed from local storage after a successful migration.
+              </div>
             </div>
           </div>
         </div>
@@ -3378,7 +3769,13 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       autoAdvanceCheckbox.addEventListener('change', () => {
         if (autoAdvanceCheckbox.checked) infiniteScrollCheckbox.checked = false;
       });
-      const githubTokenInput = dialog.querySelector('#vine-github-token');
+      const syncAccountStatus = dialog.querySelector('#vine-sync-account-status');
+      const syncAccountEmail = dialog.querySelector('#vine-sync-account-email');
+      const syncConnectBtn = dialog.querySelector('#vine-sync-connect-btn');
+      const syncDisconnectBtn = dialog.querySelector('#vine-sync-disconnect-btn');
+      const legacyGithubTokenInput = dialog.querySelector('#vine-legacy-github-token');
+      const legacyImportBtn = dialog.querySelector('#vine-legacy-import-btn');
+      const legacyImportNote = dialog.querySelector('#vine-legacy-import-note');
       const aiProviderSelect = dialog.querySelector('#vine-ai-provider');
       const deepseekKeyInput = dialog.querySelector('#vine-deepseek-key');
       const deepseekModelInput = dialog.querySelector('#vine-deepseek-model');
@@ -3395,7 +3792,29 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       claudeModelInput.value = getStorage(CONFIG.CLAUDE_MODEL, '') || CONFIG.PROVIDERS.claude.defaultModel;
       deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
       deepseekModelInput.value = getStorage(CONFIG.DEEPSEEK_MODEL, '') || CONFIG.PROVIDERS.deepseek.defaultModel;
-      githubTokenInput.value = githubToken;
+      legacyGithubTokenInput.value = getStorage(CONFIG.LEGACY_GITHUB_TOKEN_KEY, '');
+      const previousImportTime = getStorage(CONFIG.LEGACY_GITHUB_IMPORTED_AT_KEY, 0);
+      if (previousImportTime) {
+        legacyImportNote.textContent = `Last imported: ${new Date(previousImportTime).toLocaleString()}. The legacy Gists were left unchanged.`;
+      } else if (legacyGithubTokenInput.value) {
+        legacyImportNote.textContent = 'A token from the previous sync setup was detected. It will be removed after a successful import.';
+      }
+      const renderSyncAccount = () => {
+        const session = getStoredSyncSession();
+        const connected = Boolean(session);
+        syncAccountStatus.textContent = !syncConfigured
+          ? 'Setup required'
+          : connected ? 'Connected' : 'Not connected';
+        syncAccountEmail.textContent = connected && session.user
+          ? (session.user.name || session.user.email || '')
+          : !syncConfigured ? 'Add the Supabase project values to CONFIG' : '';
+        syncConnectBtn.hidden = connected;
+        syncConnectBtn.disabled = !syncConfigured;
+        syncDisconnectBtn.hidden = !connected;
+        syncDisconnectBtn.disabled = false;
+        legacyImportBtn.disabled = !connected;
+      };
+      renderSyncAccount();
 
       const showStatus = makeShowStatus(statusDiv, 3000);
       closeBtn.addEventListener('click', closeSettingsModal);
@@ -3445,7 +3864,6 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (infiniteScroll && !wasInfinite) setupInfiniteScroll();
         if (!infiniteScroll && wasInfinite) teardownInfiniteScroll();
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
-        setStorage(CONFIG.GITHUB_TOKEN_KEY, githubTokenInput.value.trim());
         setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
         setStorage(CONFIG.DEEPSEEK_API_KEY, deepseekKeyInput.value.trim());
         setStorage(CONFIG.DEEPSEEK_MODEL, deepseekModelInput.value.trim());
@@ -3531,9 +3949,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       // Keyword list management
       function syncKeywordsInBackground() {
-        const token = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
-        if (!token) return;
-        syncKeywordsWithGitHub(token).catch(err => console.error('Background keywords sync failed:', err));
+        if (!getStoredSyncSession() || !isSupabaseSyncConfigured()) return;
+        syncKeywordsWithSupabase().catch(err => console.error('Background keywords sync failed:', err));
       }
 
       function renderKeywordChips() {
@@ -3584,7 +4001,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           if (!kw) return;
           const current = getKeywordListsSync();
           if (current[listName].includes(kw)) {
-            // Duplicate: skip the full re-filter + gist sync a real add triggers.
+            // Duplicate: skip the full re-filter + cloud sync a real add triggers.
             input.value = '';
             showStatus(`"${kw}" is already in the list`, true);
             return;
@@ -3605,55 +4022,104 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       // Helper to sync searches in the background
       async function syncSearchesInBackground() {
-        const token = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
-        if (token) {
-          try {
-            await syncSearchesWithGitHub(token);
-          } catch (error) {
-            console.error('Background search sync failed:', error);
-            // Silent fail - don't disrupt user experience
-          }
+        if (!getStoredSyncSession() || !isSupabaseSyncConfigured()) return;
+        try {
+          await syncSearchesWithSupabase();
+        } catch (error) {
+          console.error('Background search sync failed:', error);
+          // Silent fail - don't disrupt user experience
         }
       }
 
-      // Sync Button Logic
+      // Cloud Sync account and manual sync controls
       const syncBtn = dialog.querySelector('#vine-sync-btn');
       const syncStatus = dialog.querySelector('#vine-sync-status');
+      syncBtn.disabled = !syncConfigured || !syncSession;
 
-      syncBtn.addEventListener('click', async () => {
-        const token = githubTokenInput.value.trim();
-        if (!token) {
-          showStatus('Please save a GitHub Token first', true);
+      const runManualSync = async () => {
+        if (!getStoredSyncSession()) {
+          showStatus('Connect Cloud Sync first', true);
           return;
         }
 
         syncBtn.disabled = true;
         syncBtn.innerHTML = '<span>⏳</span> Syncing...';
 
-        // Save token first just in case
-        setStorage(CONFIG.GITHUB_TOKEN_KEY, token);
-
         try {
-          // Sync cache, searches, and keyword lists
-          const [cacheResult, searchesResult, keywordsResult] = await Promise.all([
-            syncWithGitHub(token),
-            syncSearchesWithGitHub(token),
-            syncKeywordsWithGitHub(token)
-          ]);
+          const { cacheResult, searchesResult, keywordsResult } = await syncAllWithSupabase();
 
           showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches, ${keywordsResult.count} keywords)`);
           renderKeywordChips();
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
-
-          // Refresh the searches list in case new ones were synced
           renderSearches();
         } catch (error) {
           console.error('Sync error details:', error);
           const errorMsg = error.message || String(error);
           showStatus('Sync failed: ' + errorMsg, true);
         } finally {
-          syncBtn.disabled = false;
+          renderSyncAccount();
+          syncBtn.disabled = !getStoredSyncSession();
           syncBtn.innerHTML = '<span>🔄</span> Sync Now';
+        }
+      };
+
+      syncBtn.addEventListener('click', runManualSync);
+
+      syncConnectBtn.addEventListener('click', async () => {
+        syncConnectBtn.disabled = true;
+        syncConnectBtn.textContent = 'Opening secure sign-in…';
+        try {
+          const session = await connectSupabase();
+          renderSyncAccount();
+          syncBtn.disabled = false;
+          showStatus(`Connected${session.user && session.user.email ? ` as ${session.user.email}` : ''}`);
+          await runManualSync();
+        } catch (error) {
+          showStatus(error.message || 'Could not connect Cloud Sync', true);
+        } finally {
+          syncConnectBtn.textContent = 'Connect with Google';
+          if (!getStoredSyncSession()) syncConnectBtn.disabled = !syncConfigured;
+        }
+      });
+
+      syncDisconnectBtn.addEventListener('click', async () => {
+        syncDisconnectBtn.disabled = true;
+        await disconnectSupabase();
+        renderSyncAccount();
+        syncBtn.disabled = true;
+        syncStatus.textContent = 'Not connected';
+        showStatus('This computer has been disconnected');
+      });
+
+      legacyImportBtn.addEventListener('click', async () => {
+        if (!getStoredSyncSession()) {
+          showStatus('Connect Cloud Sync before importing', true);
+          return;
+        }
+
+        const token = legacyGithubTokenInput.value.trim();
+        if (!token) {
+          showStatus('Enter the GitHub token used by the previous sync', true);
+          legacyGithubTokenInput.focus();
+          return;
+        }
+
+        legacyImportBtn.disabled = true;
+        legacyImportBtn.textContent = 'Importing and merging…';
+        try {
+          const result = await importLegacyGithubSync(token);
+          legacyGithubTokenInput.value = '';
+          legacyImportNote.textContent = 'Import complete. The local token was removed; your GitHub Gists were left unchanged as a backup.';
+          syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
+          renderKeywordChips();
+          renderSearches();
+          showStatus(`GitHub import complete! (${result.cacheResult.count} cached items, ${result.searchesResult.count} searches, ${result.keywordsResult.count} keywords)`);
+        } catch (error) {
+          console.error('Legacy GitHub import failed:', error);
+          showStatus(`GitHub import failed: ${error.message || String(error)}`, true);
+        } finally {
+          legacyImportBtn.textContent = 'Import legacy Gists';
+          legacyImportBtn.disabled = !getStoredSyncSession();
         }
       });
 
@@ -4533,6 +4999,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   // Initialize
   function init() {
+    // Google can isolate an OAuth popup with COOP, which severs window.opener.
+    // The callback then returns through an Amazon URL fragment; consume the
+    // one-time result through userscript storage before initializing the page.
+    if (captureSyncAuthFallback()) return;
+
     // Check if we're on a Vine page
     const isVinePage = window.location.href.includes('/vine/') ||
       window.location.hostname.includes('vine.amazon.com');
@@ -4545,13 +5016,12 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       processVineItems(true);
       watchGridLayout(); // keep badge overlays glued to tiles across layout changes
 
-      // Auto-sync if a GitHub token is configured. Cache-expiry cleanup is deferred in getCache.
+      // Auto-sync if this device is connected. Cache-expiry cleanup is deferred in getCache.
       // Throttled to at most once per SYNC_MIN_INTERVAL across page loads/tabs
       // so navigating Vine doesn't re-transfer the whole cache blob every time.
-      const githubToken = getStorage(CONFIG.GITHUB_TOKEN_KEY, '');
       const syncFreshEnough = () =>
         (Date.now() - (getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0)) < CONFIG.SYNC_MIN_INTERVAL;
-      if (githubToken && !syncFreshEnough()) {
+      if (isSupabaseSyncConfigured() && getStoredSyncSession() && !syncFreshEnough()) {
         // Jitter so multiple open tabs don't all sync at once.
         setTimeout(() => {
           if (syncFreshEnough()) {
@@ -4559,15 +5029,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
             return;
           }
           console.log('Vine Price Display: Starting auto-sync...');
-          syncWithGitHub(githubToken)
-            .then(result => console.log(`Vine Price Display: Auto-sync complete (${result.count} cached items)`))
-            .catch(err => console.error('Vine Price Display: Cache auto-sync failed', err));
-          syncSearchesWithGitHub(githubToken)
-            .then(result => console.log(`Vine Price Display: Searches auto-sync complete (${result.count} searches)`))
-            .catch(err => console.error('Vine Price Display: Searches auto-sync failed', err));
-          syncKeywordsWithGitHub(githubToken)
-            .then(result => console.log(`Vine Price Display: Keywords auto-sync complete (${result.count} keywords)`))
-            .catch(err => console.error('Vine Price Display: Keywords auto-sync failed', err));
+          syncAllWithSupabase()
+            .then(({ cacheResult, searchesResult, keywordsResult }) => {
+              console.log(
+                `Vine Price Display: Auto-sync complete (${cacheResult.count} cached items, `
+                + `${searchesResult.count} searches, ${keywordsResult.count} keywords)`
+              );
+            })
+            .catch(err => console.error('Vine Price Display: Auto-sync failed', err));
         }, 2000 + Math.random() * 3000);
       }
 

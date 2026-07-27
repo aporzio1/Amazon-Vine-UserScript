@@ -1,3 +1,6 @@
 /amazon-vine-price-display.user.js.old.js
 .claude/
 CLAUDE.md
+.wrangler/
+.supabase/
+supabase/.temp/

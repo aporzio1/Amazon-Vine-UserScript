@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Vine Sync</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="auth-shell" aria-labelledby="auth-title">
+      <div class="vine-mark" aria-hidden="true">
+        <span>V</span>
+      </div>
+      <p class="eyebrow">Amazon Vine Price Display</p>
+      <h1 id="auth-title">Connecting Vine Sync</h1>
+      <p id="auth-message" class="message" role="status" aria-live="polite">
+        Finishing secure sign-in…
+      </p>
+      <div class="progress" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <p class="privacy-note">
+        This page returns a one-time authorization code to the userscript.
+        It never receives your Amazon session or password.
+      </p>
+      <button id="close-button" type="button" hidden>Close this window</button>
+    </main>
+    <script src="/callback-v1.50.0.js?v=2"></script>
+  </body>
+</html>
