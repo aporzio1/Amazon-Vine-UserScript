@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.50.0
+// @version      1.50.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -64,7 +64,7 @@
     SUPABASE_SYNC_TABLE: 'vine_sync_documents',
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
-    NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // 12 hours — "no price" results
+    NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // retry "no price" lookups after 12 hours
     SYNC_MIN_INTERVAL: 30 * 60 * 1000, // 30 min — min gap between auto-syncs
     CACHE_FLUSH_DEBOUNCE: 5000, // coalesce cache writes for 5s of idle...
     CACHE_FLUSH_MAX_WAIT: 15000, // ...but never delay a pending write past 15s
@@ -95,6 +95,16 @@
       '#priceblock_ourprice',
       '#priceblock_dealprice',
       '[data-a-color="price"] .a-offscreen'
+    ],
+    PRICE_FALLBACK_SELECTORS: [
+      '#apex_offerDisplay_desktop .a-price:not(.a-text-price) .a-offscreen',
+      '#newAccordionRow_0 .a-price:not(.a-text-price) .a-offscreen',
+      '#usedAccordionRow_0 .a-price:not(.a-text-price) .a-offscreen'
+    ],
+    PRICE_METADATA_SELECTORS: [
+      'meta[itemprop="price"][content]',
+      'meta[property="product:price:amount"][content]',
+      '#twister-plus-price-data-price'
     ],
     VINE_ITEM_SELECTORS: [
       '.vvp-item-tile',
@@ -476,10 +486,19 @@
     if (callback) callback();
   }
 
-  // Failed lookups ("no price") are cached briefly so unavailable items don't
-  // re-fetch on every page load; real prices keep the full duration.
-  function cacheTTL(entry) {
-    return entry && entry.noPrice ? CONFIG.NEGATIVE_CACHE_DURATION : CONFIG.CACHE_DURATION;
+  // Keep every seen record for the full cache lifetime. A no-price entry has
+  // a shorter retry interval, but must not disappear after that interval or
+  // "Hide Seen" will treat the same unavailable tile as new every day.
+  function cacheTTL() {
+    return CONFIG.CACHE_DURATION;
+  }
+
+  function noPriceNeedsRetry(entry, now = Date.now()) {
+    return Boolean(
+      entry
+      && entry.noPrice
+      && (!entry.timestamp || now - entry.timestamp > CONFIG.NEGATIVE_CACHE_DURATION)
+    );
   }
 
   function cleanupExpiredCache(cache) {
@@ -603,6 +622,64 @@
     return (!isNaN(price) && price >= 0) ? price : null;
   }
 
+  function extractStructuredPriceFromDoc(doc) {
+    for (const selector of CONFIG.PRICE_METADATA_SELECTORS) {
+      const element = doc.querySelector(selector);
+      if (!element) continue;
+      const raw = element.getAttribute('content')
+        || element.getAttribute('value')
+        || element.textContent;
+      const price = parsePriceText(raw);
+      if (price !== null) return price;
+    }
+
+    const extractOfferPrice = (offer) => {
+      if (Array.isArray(offer)) {
+        for (const entry of offer) {
+          const price = extractOfferPrice(entry);
+          if (price !== null) return price;
+        }
+        return null;
+      }
+      if (!offer || typeof offer !== 'object') return null;
+      for (const key of ['price', 'lowPrice']) {
+        const price = parsePriceText(String(offer[key] ?? ''));
+        if (price !== null) return price;
+      }
+      return extractOfferPrice(offer.priceSpecification);
+    };
+
+    const extractProductPrice = (node) => {
+      if (Array.isArray(node)) {
+        for (const entry of node) {
+          const price = extractProductPrice(entry);
+          if (price !== null) return price;
+        }
+        return null;
+      }
+      if (!node || typeof node !== 'object') return null;
+      const types = Array.isArray(node['@type']) ? node['@type'] : [node['@type']];
+      const isProduct = types.some(type =>
+        type === 'Product' || (typeof type === 'string' && type.endsWith('/Product'))
+      );
+      if (isProduct) {
+        const price = extractOfferPrice(node.offers);
+        if (price !== null) return price;
+      }
+      return extractProductPrice(node['@graph']);
+    };
+
+    for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const price = extractProductPrice(JSON.parse(script.textContent || 'null'));
+        if (price !== null) return price;
+      } catch (e) {
+        // Ignore unrelated or malformed structured-data blocks.
+      }
+    }
+    return null;
+  }
+
   function extractPriceFromDoc(doc) {
     const scopes = [];
     for (const sel of CONFIG.PRICE_SCOPE_SELECTORS) {
@@ -618,6 +695,16 @@
           if (price !== null) return price;
         }
       }
+    }
+
+    const structuredPrice = extractStructuredPriceFromDoc(doc);
+    if (structuredPrice !== null) return structuredPrice;
+
+    for (const selector of CONFIG.PRICE_FALLBACK_SELECTORS) {
+      const element = doc.querySelector(selector);
+      if (!element) continue;
+      const price = parsePriceText(element.textContent.trim());
+      if (price !== null) return price;
     }
     return null;
   }
@@ -821,6 +908,25 @@
     return priceData.approx ? `~${base}` : base;
   }
 
+  function appendCacheStateIndicators(badge, isCached, isSeen) {
+    if (isCached) {
+      const cacheIndicator = document.createElement('span');
+      cacheIndicator.className = 'vine-cache-indicator';
+      cacheIndicator.textContent = '📦';
+      cacheIndicator.title = 'Cached result';
+      badge.appendChild(cacheIndicator);
+    }
+
+    if (isSeen) {
+      const seenIndicator = document.createElement('span');
+      seenIndicator.className = 'vine-seen-indicator';
+      seenIndicator.textContent = '👁️';
+      seenIndicator.title = 'Previously seen';
+      seenIndicator.style.marginLeft = '4px';
+      badge.appendChild(seenIndicator);
+    }
+  }
+
   function createPriceBadge(priceData, isCached, isSeen, color) {
     const label = formatPriceLabel(priceData);
     const isRange = priceData.priceMax != null && priceData.priceMax > priceData.price;
@@ -851,23 +957,23 @@
       badge.appendChild(variantIndicator);
     }
 
-    if (isCached) {
-      const cacheIndicator = document.createElement('span');
-      cacheIndicator.className = 'vine-cache-indicator';
-      cacheIndicator.textContent = '📦';
-      cacheIndicator.title = 'Cached price';
-      badge.appendChild(cacheIndicator);
-    }
+    appendCacheStateIndicators(badge, isCached, isSeen);
 
-    if (isSeen) {
-      const seenIndicator = document.createElement('span');
-      seenIndicator.className = 'vine-seen-indicator';
-      seenIndicator.textContent = '👁️';
-      seenIndicator.title = 'Previously seen';
-      seenIndicator.style.marginLeft = '4px';
-      badge.appendChild(seenIndicator);
-    }
+    return badge;
+  }
 
+  function createUnavailablePriceBadge(isCached, isSeen) {
+    const badge = document.createElement('div');
+    badge.className = 'vine-price-badge vine-price-unavailable';
+    badge.setAttribute('aria-label', 'Product price unavailable');
+    badge.setAttribute('role', 'status');
+
+    const priceText = document.createElement('span');
+    priceText.className = 'vine-price-text';
+    priceText.textContent = 'Price unavailable';
+    priceText.title = 'Amazon did not provide a reliable price; this item will be checked again later';
+    badge.appendChild(priceText);
+    appendCacheStateIndicators(badge, isCached, isSeen);
     return badge;
   }
 
@@ -1229,6 +1335,19 @@
     });
   }
 
+  function applyUnavailableFilter(item) {
+    getHideCached((shouldHideCached) => {
+      const s = tileState(item);
+      const kwState = getKeywordStateSync(item);
+      setTileHighlight(item, kwState === 'highlight');
+      s.hidden = isPreReleaseItem(item)
+        || (s.seen && shouldHideCached)
+        || kwState === 'block';
+      scheduleHideRebuild();
+      checkAndAutoAdvance();
+    });
+  }
+
   // Processing
   const activeFetches = new Map();
 
@@ -1287,6 +1406,7 @@
           // whether the user already saw this tile so it doesn't come back
           // every reload just because we have to refetch its price.
           const staleApproxEntry = !!(cached && cached.approx === true);
+          const staleNoPriceEntry = noPriceNeedsRetry(cached);
           if (cached && !staleParentEntry && !staleApproxEntry && cached.price !== undefined && cached.price !== null) {
             const s = tileState(item);
             s.isCached = true;
@@ -1305,13 +1425,45 @@
             attachExternalLinks(badge, asin, getTileTitle(item));
             attachBadgeToTile(item, badge);
             applyColorFilter(item, color);
-          } else if (cached && !staleParentEntry && !staleApproxEntry && cached.noPrice) {
-            // Recently confirmed to have no price — skip the fetch and mirror
-            // the live-failure behavior (pre-release tiles get hidden).
-            tileState(item).noPrice = true;
-            if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
+          } else if (
+            cached
+            && !staleParentEntry
+            && !staleApproxEntry
+            && cached.noPrice
+            && !staleNoPriceEntry
+          ) {
+            // A recent no-price result is still a real cached/seen item. Show
+            // that state instead of silently making the tile look uncached.
+            const s = tileState(item);
+            s.isCached = true;
+            s.noPrice = true;
+            s.seen = true;
+            const badge = createUnavailablePriceBadge(true, true);
+            attachExternalLinks(badge, asin, getTileTitle(item));
+            attachBadgeToTile(item, badge);
+            applyUnavailableFilter(item);
           } else {
-            const priorIsSeen = staleApproxEntry ? !!cached.isSeen : false;
+            // Keep the seen state while refreshing an approximate, legacy
+            // parent, or expired no-price result.
+            const priorIsSeen = Boolean(
+              cached
+              && (cached.noPrice || ((staleApproxEntry || staleParentEntry) && cached.isSeen))
+            );
+            if (priorIsSeen) {
+              const s = tileState(item);
+              s.seen = true;
+              s.noPrice = Boolean(cached && cached.noPrice);
+              if (s.noPrice) {
+                s.isCached = true;
+                const badge = createUnavailablePriceBadge(true, true);
+                attachExternalLinks(badge, asin, getTileTitle(item));
+                attachBadgeToTile(item, badge);
+                applyUnavailableFilter(item);
+              } else {
+                s.hidden = shouldHide;
+                scheduleHideRebuild();
+              }
+            }
             uncachedItems.push({ item, asin, url, isParent, priorIsSeen });
           }
         });
@@ -1328,6 +1480,8 @@
               const s = tileState(item);
 
               // Store price (lowest of a range) — filters/sort key off this
+              s.isCached = false;
+              s.noPrice = false;
               s.price = priceData.price;
               if (priceData.priceMax != null) s.priceMax = priceData.priceMax;
               if (priceData.isEtv) s.isEtv = true;
@@ -1342,7 +1496,7 @@
                 // read path above never trusts the cached price itself —
                 // only the isSeen flag is reused; the price is refetched
                 // fresh every time.
-                setCachedPrice(asin, priceData.price, isVisible, {
+                setCachedPrice(asin, priceData.price, priorIsSeen || isVisible, {
                   priceMax: priceData.priceMax,
                   isParent,
                   isEtv: priceData.isEtv,
@@ -1355,7 +1509,7 @@
                 s.seen = !!priorIsSeen;
               });
 
-              const badge = createPriceBadge(priceData, false, false, color);
+              const badge = createPriceBadge(priceData, false, priorIsSeen, color);
               attachExternalLinks(badge, asin, getTileTitle(item));
               attachBadgeToTile(item, badge);
               applyColorFilter(item, color);
@@ -1364,11 +1518,19 @@
               // Genuine no-price result (not a throttle abort): remember it so
               // this item doesn't re-fetch on every page load.
               if (!isThrottled()) {
-                setCachedPrice(asin, null, false, { noPrice: true, isParent });
-                tileState(item).noPrice = true;
+                // Persist as seen for the full cache lifetime, but retry the
+                // price lookup after NEGATIVE_CACHE_DURATION.
+                setCachedPrice(asin, null, true, { noPrice: true, isParent });
+                const s = tileState(item);
+                s.noPrice = true;
+                s.seen = !!priorIsSeen;
+                const badge = createUnavailablePriceBadge(false, priorIsSeen);
+                attachExternalLinks(badge, asin, getTileTitle(item));
+                attachBadgeToTile(item, badge);
+                applyUnavailableFilter(item);
+              } else if (isPreReleaseItem(item)) {
+                applyColorFilter(item, 'gray');
               }
-              // If price fetch failed but it IS a pre-release item
-              if (isPreReleaseItem(item)) applyColorFilter(item, 'gray');
             }
           };
 
@@ -1871,7 +2033,9 @@
       if (!item.isConnected) return;
       const s = tileStates.get(item);
       if (!s) return;
-      if (s.color) {
+      if (s.noPrice) {
+        applyUnavailableFilter(item);
+      } else if (s.color) {
         applyColorFilter(item, s.color);
       } else if (isPreReleaseItem(item)) {
         // Handle pre-release items that didn't get a price badge (failed fetch)
@@ -4436,6 +4600,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     .vine-price-green  { background: #046044; color: #fff; }
     .vine-price-yellow { background: #FFD814; color: #0F1111; }
     .vine-price-red    { background: #B12704; color: #fff; }
+    .vine-price-unavailable { background: #565959; color: #fff; }
 
     .vine-price-text {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;

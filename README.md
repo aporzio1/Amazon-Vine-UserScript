@@ -48,6 +48,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
   - Appears automatically on product pages and review forms
 - **Customizable Price Ranges**: Set custom minimum prices for each color category
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
+- **Unavailable Prices**: Remembers seen items even when Amazon exposes no reliable price, displays a "Price unavailable" badge, and retries the lookup after 12 hours
 - **Cache Indicator**: Shows 📦 icon for cached prices
 - **Saved Searches**: Save your favorite search terms for quick 1-click access, with the ability to reorder them
 - **Cloud Sync**: Sign in with Google to sync your price cache, saved searches, and keywords between devices

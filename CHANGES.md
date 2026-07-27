@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.1 - Cache Items Without Prices
+
+- **Fix**: Items for which Amazon returns no reliable price now remain marked as seen for the full seven-day cache lifetime. The script still retries price detection after 12 hours without making the tile look new again.
+- **Fix**: Cached no-price items now participate in **Hide Seen** and retain their seen state if a later retry finds a price.
+- **Enhancement**: Added a visible cached **Price unavailable** badge plus safe product metadata, JSON-LD, and alternate-buybox extraction fallbacks.
+
 ## Version 1.50.0 - Secure Google Login for Cloud Sync
 
 - **Feature**: Replaced manually copied GitHub personal access tokens and private Gists with Google login backed by Supabase Auth. Each browser keeps its own refreshable session and can be disconnected from Vine Tools.
