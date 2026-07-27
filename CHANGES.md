@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.3 - Current Amazon Star Widget Support
+
+- **Fix**: Star-rating automation now recognizes Amazon's current camel-case `.in-context-ryp__form-field--starRating` widget and selects its ordered star spans using the mouse events expected by the form.
+
 ## Version 1.50.2 - Complete Review Form Automation
 
 - **Enhancement**: On Amazon's review page, the AI Review Generator now applies its selected star rating after filling the review title and body.

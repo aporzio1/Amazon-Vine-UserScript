@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.50.2
+// @version      1.50.3
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2086,8 +2086,10 @@
 
   const REVIEW_RATING_SCOPE_SELECTORS = [
     '#ryp__star-rating',
+    '.in-context-ryp__form-field--starRating',
     '[id*="star-rating" i]',
     '[class*="star-rating" i]',
+    '[class*="starRating"]',
     '[data-hook*="star-rating" i]',
     '[data-testid*="star-rating" i]',
     '[role="radiogroup"][aria-label*="star" i]',
@@ -2253,6 +2255,27 @@
     ].join(',');
 
     for (const root of ratingRoots) {
+      // Amazon's current in-context form renders five unlabeled spans in
+      // ascending order, so select by position and reproduce the mouse events
+      // its React handler listens for.
+      const orderedStars = root.matches('.in-context-ryp__form-field--starRating-single')
+        ? [root]
+        : Array.from(root.querySelectorAll('.in-context-ryp__form-field--starRating-single'));
+      if (orderedStars.length >= stars) {
+        const target = orderedStars[stars - 1];
+        const mouseEventProps = { bubbles: true, cancelable: true, view: window };
+        target.click();
+        target.dispatchEvent(new MouseEvent('mousedown', mouseEventProps));
+        target.dispatchEvent(new MouseEvent('mouseup', mouseEventProps));
+        const image = target.querySelector('img');
+        if (image) {
+          image.click();
+          image.dispatchEvent(new MouseEvent('mousedown', mouseEventProps));
+          image.dispatchEvent(new MouseEvent('mouseup', mouseEventProps));
+        }
+        return true;
+      }
+
       const candidates = [root, ...root.querySelectorAll(interactiveSelector)];
       const control = candidates.find(el =>
         !el.closest('#vine-review-generator')
