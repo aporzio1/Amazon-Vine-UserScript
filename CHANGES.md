@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.2 - Complete Review Form Automation
+
+- **Enhancement**: On Amazon's review page, the AI Review Generator now applies its selected star rating after filling the review title and body.
+- **Enhancement**: After all three fields are filled successfully, the generator collapses to its compact reopen button. It stays open with a warning if Amazon's form fields cannot be found.
+
 ## Version 1.50.1 - Cache Items Without Prices
 
 - **Fix**: Items for which Amazon returns no reliable price now remain marked as seen for the full seven-day cache lifetime. The script still retries price detection after 12 hours without making the tile look new again.

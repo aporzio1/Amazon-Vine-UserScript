@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.50.1
+// @version      1.50.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2084,6 +2084,16 @@
     'div[role="textbox"][contenteditable="true"]'
   ];
 
+  const REVIEW_RATING_SCOPE_SELECTORS = [
+    '#ryp__star-rating',
+    '[id*="star-rating" i]',
+    '[class*="star-rating" i]',
+    '[data-hook*="star-rating" i]',
+    '[data-testid*="star-rating" i]',
+    '[role="radiogroup"][aria-label*="star" i]',
+    '[role="radiogroup"][aria-label*="rating" i]'
+  ];
+
   // React-mounted container for the entire review form (Scarface app).
   const REVIEW_APP_SCOPE_SELECTORS = [
     '#react-app.ryp__desktop',
@@ -2175,6 +2185,91 @@
     return null;
   }
 
+  function ratingValueFromElement(el) {
+    if (!el) return null;
+    const values = [
+      el.getAttribute && el.getAttribute('aria-label'),
+      el.getAttribute && el.getAttribute('title'),
+      el.getAttribute && el.getAttribute('data-rating'),
+      el.getAttribute && el.getAttribute('data-value'),
+      el.getAttribute && el.getAttribute('value'),
+      el.getAttribute && el.getAttribute('data-hook'),
+      el.getAttribute && el.getAttribute('data-testid'),
+      el.getAttribute && el.getAttribute('name'),
+      el.id,
+      el.textContent
+    ].filter(Boolean);
+
+    for (const rawValue of values) {
+      const value = String(rawValue).trim();
+      if (/^[1-5]$/.test(value)) return Number(value);
+      const match = value.match(/(?:^|\D)([1-5])\s*(?:out\s+of\s+5\s*)?stars?(?:\D|$)/i);
+      if (match) return Number(match[1]);
+      const namedMatch = value.match(/(?:stars?|rating)[^0-9]*([1-5])(?:\D|$)/i);
+      if (namedMatch) return Number(namedMatch[1]);
+    }
+    return null;
+  }
+
+  function setReviewRating(stars) {
+    const scope = findReviewFormScope();
+    if (!scope || !Number.isInteger(stars) || stars < 1 || stars > 5) return false;
+
+    // Older forms may expose a native rating select.
+    for (const select of scope.querySelectorAll('select[name*="rating" i], select[id*="rating" i]')) {
+      if (select.closest('#vine-review-generator')) continue;
+      const option = Array.from(select.options).find(entry => ratingValueFromElement(entry) === stars);
+      if (!option) continue;
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+      if (nativeSetter && nativeSetter.set) {
+        nativeSetter.set.call(select, option.value);
+      } else {
+        select.value = option.value;
+      }
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    // Current forms use buttons or radio-like controls. Limit the search to
+    // rating containers so unrelated "5 star" text elsewhere is never clicked.
+    const ratingRoots = [];
+    for (const selector of REVIEW_RATING_SCOPE_SELECTORS) {
+      for (const root of scope.querySelectorAll(selector)) {
+        if (!ratingRoots.includes(root) && !root.closest('#vine-review-generator')) {
+          ratingRoots.push(root);
+        }
+      }
+    }
+
+    const interactiveSelector = [
+      'button',
+      'input[type="radio"]',
+      '[role="radio"]',
+      'label',
+      'a[aria-label]',
+      '[data-rating]',
+      '[data-value]'
+    ].join(',');
+
+    for (const root of ratingRoots) {
+      const candidates = [root, ...root.querySelectorAll(interactiveSelector)];
+      const control = candidates.find(el =>
+        !el.closest('#vine-review-generator')
+        && ratingValueFromElement(el) === stars
+      );
+      if (!control) continue;
+      control.click();
+      return true;
+    }
+
+    console.warn('[Vine Tools] Amazon star-rating control not found', {
+      requestedStars: stars,
+      ratingRoots: ratingRoots.map(describeEl)
+    });
+    return false;
+  }
+
   function fillReviewField(el, value) {
     if (!el) return false;
     const tag = el.tagName.toLowerCase();
@@ -2225,7 +2320,7 @@
     return false;
   }
 
-  function autoFillReviewForm(title, body) {
+  function autoFillReviewForm(title, body, stars) {
     const titleEl = findReviewTitleField();
     const bodyEl = findReviewBodyField();
     console.log('[Vine Tools] Review fields found:', {
@@ -2235,7 +2330,8 @@
     if (!bodyEl) dumpReviewFormCandidates();
     return {
       title: !!(titleEl && fillReviewField(titleEl, title)),
-      body: !!(bodyEl && fillReviewField(bodyEl, body))
+      body: !!(bodyEl && fillReviewField(bodyEl, body)),
+      rating: setReviewRating(stars)
     };
   }
 
@@ -2596,13 +2692,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     reopenBtn.setAttribute('aria-label', 'Reopen AI review generator');
     reopenBtn.style.display = 'none';
     container.parentNode.insertBefore(reopenBtn, container);
+    const setGeneratorCollapsed = (collapsed) => {
+      container.style.display = collapsed ? 'none' : '';
+      reopenBtn.style.display = collapsed ? '' : 'none';
+    };
     reopenBtn.addEventListener('click', () => {
-      container.style.display = '';
-      reopenBtn.style.display = 'none';
+      setGeneratorCollapsed(false);
     });
     closeBtn.addEventListener('click', () => {
-      container.style.display = 'none';
-      reopenBtn.style.display = '';
+      setGeneratorCollapsed(true);
     });
     const showStatus = makeShowStatus(statusDiv, 5000);
 
@@ -2666,16 +2764,22 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
         if (window.location.href.includes('/review/create-review')) {
           try {
-            const filled = autoFillReviewForm(title, body);
+            const filled = autoFillReviewForm(title, body, stars);
             console.log('[Vine Tools] Auto-fill result:', filled);
-            if (filled.title && filled.body) {
-              showStatus('Review inserted into the form');
-            } else if (filled.title && !filled.body) {
-              showStatus('Title filled — body field not found, please paste manually', true);
-            } else if (!filled.title && filled.body) {
-              showStatus('Body filled — title field not found, please paste manually', true);
+            if (filled.title && filled.body && filled.rating) {
+              showStatus('Review and star rating inserted');
+              // Leave a moment for Amazon's React handlers to process the
+              // synthetic form events before hiding the generator panel.
+              setTimeout(() => setGeneratorCollapsed(true), 300);
             } else {
-              showStatus('Review generated — could not find form fields, please paste manually', true);
+              const missing = [];
+              if (!filled.title) missing.push('title');
+              if (!filled.body) missing.push('body');
+              if (!filled.rating) missing.push('star rating');
+              showStatus(
+                `Review generated — ${missing.join(' and ')} not found, please complete manually`,
+                true
+              );
             }
           } catch (e) {
             console.error('Vine Tools auto-fill error:', e);
