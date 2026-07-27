@@ -1,5 +1,15 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.4 - Generate and Submit Reviews
+
+- **Feature**: Added a **Generate and Submit** button on Amazon's
+  review-creation page. It generates the review, fills the title, body, and
+  rating, waits for Amazon's form state to update, then clicks Amazon's real
+  Submit control.
+- **Safety**: Submission stops if any generated field, the star rating, or an
+  enabled Submit control cannot be found; the completed draft remains
+  available for manual review and submission.
+
 ## Version 1.50.3 - Current Amazon Star Widget Support
 
 - **Fix**: Star-rating automation now recognizes Amazon's current camel-case `.in-context-ryp__form-field--starRating` widget and selects its ordered star spans using the mouse events expected by the form.

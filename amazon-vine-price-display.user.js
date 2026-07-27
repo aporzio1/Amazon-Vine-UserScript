@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.50.3
+// @version      1.50.4
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2096,6 +2096,16 @@
     '[role="radiogroup"][aria-label*="rating" i]'
   ];
 
+  const REVIEW_SUBMIT_SELECTORS = [
+    '.ryp-submit-button-desktop input[type="submit"]',
+    '.ryp__submit-button input[type="submit"]',
+    '#in-context-ryp-form input[type="submit"]',
+    'form.ryp__review-form input[type="submit"]',
+    'button[type="submit"][data-hook*="submit" i]',
+    'button[type="submit"]',
+    'input[type="submit"]'
+  ];
+
   // React-mounted container for the entire review form (Scarface app).
   const REVIEW_APP_SCOPE_SELECTORS = [
     '#react-app.ryp__desktop',
@@ -2291,6 +2301,38 @@
       ratingRoots: ratingRoots.map(describeEl)
     });
     return false;
+  }
+
+  function submitReviewForm() {
+    const scope = findReviewFormScope();
+    if (!scope) return false;
+
+    const candidates = [];
+    for (const selector of REVIEW_SUBMIT_SELECTORS) {
+      for (const control of scope.querySelectorAll(selector)) {
+        if (!candidates.includes(control) && !control.closest('#vine-review-generator')) {
+          candidates.push(control);
+        }
+      }
+    }
+
+    const isEnabled = control =>
+      !control.disabled && control.getAttribute('aria-disabled') !== 'true';
+    const submitControl = candidates.find(control =>
+      isEnabled(control) && (control.offsetParent !== null || control.getClientRects().length > 0)
+    ) || candidates.find(isEnabled);
+
+    if (!submitControl) {
+      console.warn('[Vine Tools] Enabled Amazon review Submit control not found', {
+        candidates: candidates.map(describeEl)
+      });
+      return false;
+    }
+
+    // Click Amazon's actual control so its normal validation and submission
+    // handlers still run; never bypass them with form.submit().
+    submitControl.click();
+    return true;
   }
 
   function fillReviewField(el, value) {
@@ -2666,6 +2708,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         <textarea id="vine-review-comments" class="vine-review-input vine-review-textarea" placeholder="e.g. Used it for 2 weeks, great battery, too heavy for daily use"></textarea>
 
         <button type="button" id="vine-generate-review-btn" class="vine-btn-primary vine-review-generate">Generate Review</button>
+        ${isReviewPage ? `
+          <button type="button" id="vine-generate-submit-review-btn" class="vine-btn-secondary vine-review-generate" aria-label="Generate and immediately submit this Amazon review">Generate and Submit</button>
+        ` : ''}
 
         <div id="vine-review-output" class="vine-review-output" style="display: none;" role="region" aria-label="Generated review">
           <label class="vine-review-label">Review Title</label>
@@ -2696,6 +2741,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     // Event listeners
     const closeBtn = document.getElementById('vine-close-generator');
     const generateBtn = document.getElementById('vine-generate-review-btn');
+    const generateSubmitBtn = document.getElementById('vine-generate-submit-review-btn');
     const copyTitleBtn = document.getElementById('vine-copy-title-btn');
     const copyBodyBtn = document.getElementById('vine-copy-body-btn');
     const starsSelect = document.getElementById('vine-review-stars');
@@ -2727,12 +2773,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     });
     const showStatus = makeShowStatus(statusDiv, 5000);
 
-    generateBtn.addEventListener('click', async () => {
+    const handleGenerateReview = async (submitAfterFill) => {
       const stars = parseInt(starsSelect.value, 10);
       const comments = commentsTextarea.value.trim();
+      const activeButton = submitAfterFill ? generateSubmitBtn : generateBtn;
+      const actionButtons = [generateBtn, generateSubmitBtn].filter(Boolean);
 
-      generateBtn.disabled = true;
-      generateBtn.textContent = 'Generating...';
+      actionButtons.forEach(button => { button.disabled = true; });
+      activeButton.textContent = 'Generating...';
       outputDiv.style.display = 'none';
 
       try {
@@ -2790,10 +2838,26 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
             const filled = autoFillReviewForm(title, body, stars);
             console.log('[Vine Tools] Auto-fill result:', filled);
             if (filled.title && filled.body && filled.rating) {
-              showStatus('Review and star rating inserted');
-              // Leave a moment for Amazon's React handlers to process the
-              // synthetic form events before hiding the generator panel.
-              setTimeout(() => setGeneratorCollapsed(true), 300);
+              if (submitAfterFill) {
+                showStatus('Review inserted — submitting...');
+                activeButton.textContent = 'Submitting...';
+                // Allow Amazon's React state and validation to process the
+                // field and rating events before clicking its Submit control.
+                await new Promise(resolve => setTimeout(resolve, 750));
+                if (submitReviewForm()) {
+                  showStatus('Review submitted');
+                } else {
+                  showStatus(
+                    'Review inserted, but Amazon’s Submit button was unavailable. Please submit manually.',
+                    true
+                  );
+                }
+              } else {
+                showStatus('Review and star rating inserted');
+                // Leave a moment for Amazon's React handlers to process the
+                // synthetic form events before hiding the generator panel.
+                setTimeout(() => setGeneratorCollapsed(true), 300);
+              }
             } else {
               const missing = [];
               if (!filled.title) missing.push('title');
@@ -2814,10 +2878,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       } catch (error) {
         showStatus(error.message, true);
       } finally {
-        generateBtn.disabled = false;
+        actionButtons.forEach(button => { button.disabled = false; });
         generateBtn.textContent = 'Generate Review';
+        if (generateSubmitBtn) generateSubmitBtn.textContent = 'Generate and Submit';
       }
-    });
+    };
+    generateBtn.addEventListener('click', () => handleGenerateReview(false));
+    if (generateSubmitBtn) {
+      generateSubmitBtn.addEventListener('click', () => handleGenerateReview(true));
+    }
 
     const wireCopy = (btn, sourceEl, label) => {
       btn.addEventListener('click', () => {
