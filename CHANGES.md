@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.5 - Collapse After Review Submission
+
+- **Fix**: **Generate and Submit** now collapses the AI Review Generator after
+  successfully clicking Amazon's Submit control, matching **Generate Review**.
+  The panel remains open if submission cannot be initiated.
+
 ## Version 1.50.4 - Generate and Submit Reviews
 
 - **Feature**: Added a **Generate and Submit** button on Amazon's

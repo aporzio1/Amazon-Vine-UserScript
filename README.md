@@ -71,7 +71,8 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
    reviews (requires an API key for your chosen provider in Settings). On
    Amazon's review page, **Generate Review** fills the title, body, and selected
    star rating then collapses the panel; **Generate and Submit** performs the
-   same checks and clicks Amazon's Submit button only when every field succeeds
+   same checks, clicks Amazon's Submit button only when every field succeeds,
+   and collapses the panel after initiating submission
 3. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
 4. **Saved Searches**: Use the "Saved Searches" tab to add, rename (click ✏️), delete (click 🗑️ twice), and reorder (drag the ⋮⋮ handle) your favorite search terms
 5. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab

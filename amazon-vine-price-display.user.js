@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.50.4
+// @version      1.50.5
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2846,6 +2846,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
                 await new Promise(resolve => setTimeout(resolve, 750));
                 if (submitReviewForm()) {
                   showStatus('Review submitted');
+                  setGeneratorCollapsed(true);
                 } else {
                   showStatus(
                     'Review inserted, but Amazon’s Submit button was unavailable. Please submit manually.',
