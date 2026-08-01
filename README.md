@@ -129,7 +129,8 @@ browser's sync session.
 
 Blank local AI-key fields never erase a synced key. On a first sync, missing
 keys are merged from the cloud; if two nonblank values conflict, the newer
-saved setting wins.
+saved setting wins. Cloud Sync shows the last encrypted-key upload time and
+can restore that encrypted key bundle after passphrase confirmation.
 
 Existing GitHub Gist users can migrate without exporting JSON manually. Connect
 to Cloud Sync, enter the old token if it was not detected automatically, and

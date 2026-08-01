@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.2 - Restore Encrypted AI Keys
+
+- **Feature**: Cloud Sync now shows when encrypted AI keys were last uploaded
+  and provides a confirmation-protected download button. It restores the
+  encrypted key bundle only after the user supplies the matching passphrase.
+
 ## Version 1.51.1 - Protect Synced Keys From Blank Devices
 
 - **Fix**: A device with blank local API-key fields can no longer overwrite

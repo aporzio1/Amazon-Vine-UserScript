@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.1
+// @version      1.51.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -3285,7 +3285,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
   async function fetchSyncDocument(kind) {
     const table = encodeURIComponent(CONFIG.SUPABASE_SYNC_TABLE);
     const rows = await supabaseDataRequest(
-      `${table}?select=payload,revision&kind=eq.${encodeURIComponent(kind)}`
+      `${table}?select=payload,revision,updated_at&kind=eq.${encodeURIComponent(kind)}`
     );
     return Array.isArray(rows) && rows[0] ? rows[0] : null;
   }
@@ -3537,6 +3537,23 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       }
     }
     throw new Error('Cloud Sync conflict for encrypted AI keys; please retry');
+  }
+
+  async function downloadAiKeysFromSupabase() {
+    if (!aiKeySyncPassphrase) {
+      throw new Error('Enter your AI key sync passphrase before downloading encrypted keys');
+    }
+    const row = await fetchSyncDocument('ai_keys');
+    if (!row) throw new Error('No encrypted AI keys have been uploaded yet');
+
+    try {
+      const settings = applyAiKeySettings(
+        await runAiKeyCrypto('decrypt', aiKeySyncPassphrase, row.payload)
+      );
+      return { settings, updatedAt: row.updated_at || null };
+    } catch (error) {
+      throw new Error('Could not decrypt AI keys. Check the sync passphrase.');
+    }
   }
 
   function getCacheAsync() {
@@ -4393,8 +4410,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
                 <label for="vine-sync-ai-key-passphrase-confirm" style="display: block; margin: 8px 0 4px; color: var(--vine-fg-muted);">Confirm passphrase</label>
                 <input type="password" id="vine-sync-ai-key-passphrase-confirm" autocomplete="new-password" placeholder="Required on every device"
                   style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                <div id="vine-sync-ai-key-upload-status" style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 8px;">
+                  Checking for an encrypted key upload…
+                </div>
+                <button type="button" id="vine-sync-ai-key-download-btn" class="vine-btn-secondary" style="width: 100%; margin-top: 8px;" disabled>
+                  Download encrypted keys
+                </button>
                 <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 6px;">
-                  If you forget it, encrypted keys cannot be recovered. Turning this off stops future key sync but does not erase the encrypted cloud copy.
+                  Downloading replaces local AI-key settings. If you forget the passphrase, encrypted keys cannot be recovered. Turning this off stops future key sync but does not erase the encrypted cloud copy.
                 </div>
               </div>
             </div>
@@ -4515,6 +4538,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const aiKeySyncControls = dialog.querySelector('#vine-sync-ai-key-controls');
       const aiKeySyncPassphraseInput = dialog.querySelector('#vine-sync-ai-key-passphrase');
       const aiKeySyncPassphraseConfirmInput = dialog.querySelector('#vine-sync-ai-key-passphrase-confirm');
+      const aiKeySyncUploadStatus = dialog.querySelector('#vine-sync-ai-key-upload-status');
+      const aiKeySyncDownloadBtn = dialog.querySelector('#vine-sync-ai-key-download-btn');
       const legacyGithubTokenInput = dialog.querySelector('#vine-legacy-github-token');
       const legacyImportBtn = dialog.querySelector('#vine-legacy-import-btn');
       const legacyImportNote = dialog.querySelector('#vine-legacy-import-note');
@@ -4541,6 +4566,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       } else if (legacyGithubTokenInput.value) {
         legacyImportNote.textContent = 'A token from the previous sync setup was detected. It will be removed after a successful import.';
       }
+      let hasUploadedAiKeyBundle = false;
       const renderSyncAccount = () => {
         const session = getStoredSyncSession();
         const connected = Boolean(session);
@@ -4555,6 +4581,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         syncDisconnectBtn.hidden = !connected;
         syncDisconnectBtn.disabled = false;
         legacyImportBtn.disabled = !connected;
+        aiKeySyncDownloadBtn.disabled = !connected
+          || !aiKeySyncCheckbox.checked
+          || !hasUploadedAiKeyBundle;
       };
       renderSyncAccount();
 
@@ -4570,6 +4599,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.SYNC_AI_KEYS_ENABLED_KEY, aiKeySyncCheckbox.checked);
         if (!aiKeySyncCheckbox.checked) aiKeySyncPassphrase = null;
         renderAiKeySyncControls();
+        renderSyncAccount();
       });
 
       const unlockAiKeySync = () => {
@@ -4588,6 +4618,59 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         aiKeySyncPassphraseConfirmInput.value = '';
         return true;
       };
+
+      const refreshAiKeySettingInputs = () => {
+        openaiKeyInput.value = getStorage(CONFIG.OPENAI_API_KEY, '');
+        deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
+        deepseekModelInput.value = getStorage(CONFIG.DEEPSEEK_MODEL, '');
+        claudeKeyInput.value = getStorage(CONFIG.CLAUDE_API_KEY, '');
+        claudeModelInput.value = getStorage(CONFIG.CLAUDE_MODEL, '');
+        aiProviderSelect.value = getStorage(CONFIG.AI_PROVIDER, 'openai');
+        openaiSection.style.display = aiProviderSelect.value === 'openai' ? '' : 'none';
+        deepseekSection.style.display = aiProviderSelect.value === 'deepseek' ? '' : 'none';
+        claudeSection.style.display = aiProviderSelect.value === 'claude' ? '' : 'none';
+      };
+
+      const refreshAiKeyUploadStatus = async () => {
+        if (!getStoredSyncSession()) {
+          hasUploadedAiKeyBundle = false;
+          aiKeySyncUploadStatus.textContent = 'Connect Cloud Sync to check for encrypted keys.';
+          renderSyncAccount();
+          return;
+        }
+        aiKeySyncUploadStatus.textContent = 'Checking for an encrypted key upload…';
+        try {
+          const row = await fetchSyncDocument('ai_keys');
+          hasUploadedAiKeyBundle = Boolean(row);
+          if (row && row.updated_at) {
+            aiKeySyncUploadStatus.textContent = `Encrypted keys uploaded: ${new Date(row.updated_at).toLocaleString()}`;
+          } else {
+            aiKeySyncUploadStatus.textContent = 'No encrypted AI keys have been uploaded yet.';
+          }
+        } catch (error) {
+          hasUploadedAiKeyBundle = false;
+          aiKeySyncUploadStatus.textContent = 'Could not check encrypted key upload status.';
+        }
+        renderSyncAccount();
+      };
+
+      wireConfirmButton(aiKeySyncDownloadBtn, 'Confirm download', async () => {
+        try {
+          unlockAiKeySync();
+          aiKeySyncDownloadBtn.disabled = true;
+          const result = await downloadAiKeysFromSupabase();
+          refreshAiKeySettingInputs();
+          showStatus('Encrypted AI keys downloaded to this device');
+          if (result.updatedAt) {
+            aiKeySyncUploadStatus.textContent = `Encrypted keys uploaded: ${new Date(result.updatedAt).toLocaleString()}`;
+          }
+        } catch (error) {
+          showStatus(error.message || 'Could not download encrypted AI keys', true);
+        } finally {
+          renderSyncAccount();
+        }
+      });
+      refreshAiKeyUploadStatus();
 
       aiProviderSelect.addEventListener('change', () => {
         openaiSection.style.display = aiProviderSelect.value === 'openai' ? '' : 'none';
@@ -4826,15 +4909,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
           renderSearches();
           if (aiKeysResult) {
-            openaiKeyInput.value = getStorage(CONFIG.OPENAI_API_KEY, '');
-            deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
-            deepseekModelInput.value = getStorage(CONFIG.DEEPSEEK_MODEL, '');
-            claudeKeyInput.value = getStorage(CONFIG.CLAUDE_API_KEY, '');
-            claudeModelInput.value = getStorage(CONFIG.CLAUDE_MODEL, '');
-            aiProviderSelect.value = getStorage(CONFIG.AI_PROVIDER, 'openai');
-            openaiSection.style.display = aiProviderSelect.value === 'openai' ? '' : 'none';
-            deepseekSection.style.display = aiProviderSelect.value === 'deepseek' ? '' : 'none';
-            claudeSection.style.display = aiProviderSelect.value === 'claude' ? '' : 'none';
+            refreshAiKeySettingInputs();
+            refreshAiKeyUploadStatus();
           }
         } catch (error) {
           console.error('Sync error details:', error);
@@ -4857,6 +4933,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           renderSyncAccount();
           syncBtn.disabled = false;
           showStatus(`Connected${session.user && session.user.email ? ` as ${session.user.email}` : ''}`);
+          await refreshAiKeyUploadStatus();
           await runManualSync();
         } catch (error) {
           showStatus(error.message || 'Could not connect Cloud Sync', true);
@@ -4872,6 +4949,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         renderSyncAccount();
         syncBtn.disabled = true;
         syncStatus.textContent = 'Not connected';
+        hasUploadedAiKeyBundle = false;
+        aiKeySyncUploadStatus.textContent = 'Connect Cloud Sync to check for encrypted keys.';
         showStatus('This computer has been disconnected');
       });
 
