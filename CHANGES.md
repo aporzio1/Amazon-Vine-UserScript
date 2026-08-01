@@ -1,5 +1,13 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.7 - Complete Firefox Android Cloud Sign-In
+
+- **Fix**: Firefox Android now uses Supabase's CORS-enabled HTTPS endpoints for
+  the authorization-code exchange, session refresh, logout, and sync requests.
+  This avoids the userscript-manager network failure that occurred after a
+  successful Google prompt while retaining privileged requests on other
+  platforms.
+
 ## Version 1.50.6 - Firefox Google Sign-In Compatibility
 
 - **Fix**: Google Cloud Sync sign-in no longer passes typed arrays through

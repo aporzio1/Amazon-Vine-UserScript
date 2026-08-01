@@ -105,7 +105,8 @@ The script extracts product ASINs from Vine item links, checks a local cache fir
 ## Browser Compatibility
 
 - ✅ Chrome/Edge (with Tampermonkey or Violentmonkey)
-- ✅ Firefox (with Tampermonkey, Violentmonkey, or Greasemonkey)
+- ✅ Firefox desktop and Android
+  (with Tampermonkey, Violentmonkey, or Greasemonkey)
 - ✅ Safari (with Tampermonkey or Userscripts)
 - ✅ Opera (with Tampermonkey or Violentmonkey)
 

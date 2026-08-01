@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.50.6
+// @version      1.50.7
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -276,6 +276,48 @@
         onerror: () => reject(new Error(`Network error: ${url}`))
       });
     });
+  }
+
+  function isFirefoxAndroid() {
+    return /Android/i.test(navigator.userAgent)
+      && /Firefox\//i.test(navigator.userAgent);
+  }
+
+  async function corsFetch({ method = 'GET', url, headers, data }) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        ...(data != null ? { body: data } : {}),
+        mode: 'cors',
+        credentials: 'omit'
+      });
+    } catch (cause) {
+      const error = new Error(`Network error: ${cause.message || url}`);
+      error.cause = cause;
+      throw error;
+    }
+
+    const responseText = await response.text();
+    const normalized = {
+      status: response.status,
+      statusText: response.statusText || '',
+      responseText,
+      responseHeaders: ''
+    };
+    if (response.ok) return normalized;
+
+    const error = new Error(`HTTP ${response.status} ${response.statusText || ''}`.trim());
+    Object.assign(error, normalized);
+    throw error;
+  }
+
+  function supabaseFetch(options) {
+    // Firefox Android userscript sandboxes can fail GM_xmlhttpRequest after an
+    // OAuth popup. Supabase permits CORS, and Gecko's Xray view supplies the
+    // unmodified native fetch implementation in this isolated content realm.
+    return isFirefoxAndroid() ? corsFetch(options) : gmFetch(options);
   }
 
   // Parse a `Retry-After` header value (seconds or HTTP-date) into a millisecond delay.
@@ -2931,11 +2973,16 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
   }
 
   function parseSupabaseError(error, fallback) {
+    const networkFallback = error && /^Network error:/.test(error.message || '')
+      ? `${fallback}: ${error.message}`
+      : fallback;
     try {
       const body = JSON.parse(error.responseText || '{}');
-      return new Error(body.msg || body.message || body.error_description || body.error || fallback);
+      return new Error(
+        body.msg || body.message || body.error_description || body.error || networkFallback
+      );
     } catch (e) {
-      return new Error(fallback || error.message || 'Supabase request failed');
+      return new Error(networkFallback || error.message || 'Supabase request failed');
     }
   }
 
@@ -3071,7 +3118,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     const current = getStoredSyncSession();
     if (!current) throw new Error('Connect Cloud Sync first');
 
-    syncRefreshPromise = gmFetch({
+    syncRefreshPromise = supabaseFetch({
       method: 'POST',
       url: `${CONFIG.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,
       headers: {
@@ -3173,7 +3220,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
     let response;
     try {
-      response = await gmFetch({
+      response = await supabaseFetch({
         method: 'POST',
         url: `${CONFIG.SUPABASE_URL}/auth/v1/token?grant_type=pkce`,
         headers: {
@@ -3195,7 +3242,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     setStorage(CONFIG.SYNC_SESSION_KEY, null);
     if (!session || !isSupabaseSyncConfigured()) return;
     try {
-      await gmFetch({
+      await supabaseFetch({
         method: 'POST',
         url: `${CONFIG.SUPABASE_URL}/auth/v1/logout?scope=local`,
         headers: {
@@ -3211,7 +3258,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
   async function supabaseDataRequest(path, method = 'GET', body = null, canRefresh = true) {
     const session = await getValidSyncSession();
     try {
-      const response = await gmFetch({
+      const response = await supabaseFetch({
         method,
         url: `${CONFIG.SUPABASE_URL}/rest/v1/${path}`,
         headers: {
