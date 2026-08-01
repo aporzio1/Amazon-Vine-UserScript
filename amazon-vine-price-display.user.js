@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.2
+// @version      1.51.3
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -4407,8 +4407,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
                 <label for="vine-sync-ai-key-passphrase" style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Encryption passphrase</label>
                 <input type="password" id="vine-sync-ai-key-passphrase" autocomplete="new-password" placeholder="At least 12 characters"
                   style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
-                <label for="vine-sync-ai-key-passphrase-confirm" style="display: block; margin: 8px 0 4px; color: var(--vine-fg-muted);">Confirm passphrase</label>
-                <input type="password" id="vine-sync-ai-key-passphrase-confirm" autocomplete="new-password" placeholder="Required on every device"
+                <label for="vine-sync-ai-key-passphrase-confirm" style="display: block; margin: 8px 0 4px; color: var(--vine-fg-muted);">Confirm passphrase for uploads</label>
+                <input type="password" id="vine-sync-ai-key-passphrase-confirm" autocomplete="new-password" placeholder="Not needed when downloading"
                   style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
                 <div id="vine-sync-ai-key-upload-status" style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 8px;">
                   Checking for an encrypted key upload…
@@ -4602,7 +4602,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         renderSyncAccount();
       });
 
-      const unlockAiKeySync = () => {
+      const unlockAiKeySync = ({ requireConfirmation = true } = {}) => {
         if (!aiKeySyncCheckbox.checked) return false;
         const passphrase = aiKeySyncPassphraseInput.value;
         const confirmation = aiKeySyncPassphraseConfirmInput.value;
@@ -4610,7 +4610,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (passphrase.length < 12) {
           throw new Error('Use an AI key sync passphrase with at least 12 characters');
         }
-        if (passphrase !== confirmation) {
+        if (requireConfirmation && passphrase !== confirmation) {
           throw new Error('The AI key sync passphrases do not match');
         }
         aiKeySyncPassphrase = passphrase;
@@ -4656,7 +4656,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       wireConfirmButton(aiKeySyncDownloadBtn, 'Confirm download', async () => {
         try {
-          unlockAiKeySync();
+          unlockAiKeySync({ requireConfirmation: false });
           aiKeySyncDownloadBtn.disabled = true;
           const result = await downloadAiKeysFromSupabase();
           refreshAiKeySettingInputs();

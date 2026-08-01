@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.3 - Single Passphrase Entry for Key Restore
+
+- **Fix**: Downloading encrypted AI keys now requires the passphrase only
+  once. Confirmation remains required when uploading a new key bundle.
+
 ## Version 1.51.2 - Restore Encrypted AI Keys
 
 - **Feature**: Cloud Sync now shows when encrypted AI keys were last uploaded
