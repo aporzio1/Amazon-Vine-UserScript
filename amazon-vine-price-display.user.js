@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.0
+// @version      1.51.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -3374,6 +3374,29 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     return normalized;
   }
 
+  function mergeAiKeySettings(local, remote) {
+    const normalizedLocal = normalizeAiKeySettings(local);
+    const normalizedRemote = normalizeAiKeySettings(remote);
+    const localIsNewer = normalizedLocal.timestamp >= normalizedRemote.timestamp;
+    const chooseKey = (localValue, remoteValue) => {
+      if (!localValue) return remoteValue;
+      if (!remoteValue) return localValue;
+      return localIsNewer ? localValue : remoteValue;
+    };
+
+    return {
+      timestamp: Math.max(normalizedLocal.timestamp, normalizedRemote.timestamp),
+      provider: localIsNewer ? normalizedLocal.provider : normalizedRemote.provider,
+      openaiKey: chooseKey(normalizedLocal.openaiKey, normalizedRemote.openaiKey),
+      deepseekKey: chooseKey(normalizedLocal.deepseekKey, normalizedRemote.deepseekKey),
+      deepseekModel: localIsNewer
+        ? normalizedLocal.deepseekModel
+        : normalizedRemote.deepseekModel,
+      claudeKey: chooseKey(normalizedLocal.claudeKey, normalizedRemote.claudeKey),
+      claudeModel: localIsNewer ? normalizedLocal.claudeModel : normalizedRemote.claudeModel
+    };
+  }
+
   const AI_KEY_CRYPTO_WORKER = String.raw`
     const toBase64Url = (bytes) => {
       let binary = '';
@@ -3490,15 +3513,28 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         }
       }
 
-      if (!remote || local.timestamp > remote.timestamp) {
+      if (!remote) {
         const payload = await runAiKeyCrypto('encrypt', aiKeySyncPassphrase, local);
         const applied = await replaceSyncDocument('ai_keys', payload, row ? row.revision : 0);
-        if (applied) return { success: true, direction: 'uploaded' };
+        if (applied) {
+          applyAiKeySettings(local);
+          return { success: true, direction: 'uploaded' };
+        }
         continue;
       }
 
-      applyAiKeySettings(remote);
-      return { success: true, direction: 'downloaded' };
+      const merged = mergeAiKeySettings(local, remote);
+      if (JSON.stringify(merged) === JSON.stringify(remote)) {
+        applyAiKeySettings(remote);
+        return { success: true, direction: 'downloaded' };
+      }
+
+      const payload = await runAiKeyCrypto('encrypt', aiKeySyncPassphrase, merged);
+      const applied = await replaceSyncDocument('ai_keys', payload, row.revision);
+      if (applied) {
+        applyAiKeySettings(merged);
+        return { success: true, direction: 'merged' };
+      }
     }
     throw new Error('Cloud Sync conflict for encrypted AI keys; please retry');
   }
@@ -4789,7 +4825,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           renderKeywordChips();
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
           renderSearches();
-          if (aiKeysResult && aiKeysResult.direction === 'downloaded') {
+          if (aiKeysResult) {
             openaiKeyInput.value = getStorage(CONFIG.OPENAI_API_KEY, '');
             deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
             deepseekModelInput.value = getStorage(CONFIG.DEEPSEEK_MODEL, '');

@@ -1,5 +1,11 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.1 - Protect Synced Keys From Blank Devices
+
+- **Fix**: A device with blank local API-key fields can no longer overwrite
+  nonblank encrypted keys already stored in Cloud Sync. First-time device syncs
+  merge missing keys, while conflicting nonblank values use the newer settings.
+
 ## Version 1.51.0 - Encrypted AI API Key Sync
 
 - **Feature**: Cloud Sync can now optionally sync OpenAI, DeepSeek, and Claude

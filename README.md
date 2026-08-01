@@ -127,6 +127,10 @@ never stored or uploaded, so it cannot be recovered. Amazon cookies and other
 local settings never leave the device. Use **Disconnect** to revoke this
 browser's sync session.
 
+Blank local AI-key fields never erase a synced key. On a first sync, missing
+keys are merged from the cloud; if two nonblank values conflict, the newer
+saved setting wins.
+
 Existing GitHub Gist users can migrate without exporting JSON manually. Connect
 to Cloud Sync, enter the old token if it was not detected automatically, and
 click **Import legacy Gists**. The importer finds the three Vine Gists, merges
