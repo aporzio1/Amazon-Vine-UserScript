@@ -1,5 +1,15 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.0 - Encrypted AI API Key Sync
+
+- **Feature**: Cloud Sync can now optionally sync OpenAI, DeepSeek, and Claude
+  API keys plus their selected models. The script encrypts these settings on
+  the device with a user-provided passphrase before uploading them.
+- **Security**: The passphrase is kept only in memory and never sent to or
+  stored by Supabase. A new device needs the same passphrase to decrypt the
+  synced keys; the existing cache, searches, and keyword sync remains
+  unchanged.
+
 ## Version 1.50.7 - Complete Firefox Android Cloud Sign-In
 
 - **Fix**: Firefox Android now uses Supabase's CORS-enabled HTTPS endpoints for

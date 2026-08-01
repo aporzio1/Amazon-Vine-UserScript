@@ -120,9 +120,12 @@ password is required:
 3. Complete the secure sign-in window.
 4. Click **Sync Now**. Future syncs run automatically at a throttled interval.
 
-Only the price cache, saved searches, and keyword lists are synchronized. AI
-provider keys, Amazon cookies, and other local settings never leave the device.
-Use **Disconnect** to revoke this browser's sync session.
+The price cache, saved searches, and keyword lists are synchronized. You can
+also opt in to encrypted AI-key sync: choose a passphrase of at least 12
+characters and enter the same passphrase on every device. The passphrase is
+never stored or uploaded, so it cannot be recovered. Amazon cookies and other
+local settings never leave the device. Use **Disconnect** to revoke this
+browser's sync session.
 
 Existing GitHub Gist users can migrate without exporting JSON manually. Connect
 to Cloud Sync, enter the old token if it was not detected automatically, and

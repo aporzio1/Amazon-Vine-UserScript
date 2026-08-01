@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.50.7
+// @version      1.51.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -50,7 +50,9 @@
     CLAUDE_API_KEY: 'vine_claude_api_key',
     CLAUDE_MODEL: 'vine_claude_model',
     AI_PROVIDER: 'vine_ai_provider',
+    AI_SETTINGS_TIMESTAMP_KEY: 'vine_ai_settings_timestamp',
     SYNC_SESSION_KEY: 'vine_sync_session',
+    SYNC_AI_KEYS_ENABLED_KEY: 'vine_sync_ai_keys_enabled',
     SYNC_AUTH_RESULT_PREFIX: 'vine_sync_auth_result_',
     LEGACY_GITHUB_TOKEN_KEY: 'vine_github_token',
     LEGACY_GIST_ID_KEY: 'vine_gist_id',
@@ -3320,6 +3322,187 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     throw new Error(`Cloud Sync conflict for ${kind}; please retry`);
   }
 
+  // The passphrase is intentionally memory-only. It is never written to
+  // userscript storage or sent to Supabase.
+  let aiKeySyncPassphrase = null;
+
+  function isAiKeySyncEnabled() {
+    return getStorage(CONFIG.SYNC_AI_KEYS_ENABLED_KEY, false) === true;
+  }
+
+  function getLocalAiKeySettings() {
+    return {
+      timestamp: getStorage(CONFIG.AI_SETTINGS_TIMESTAMP_KEY, 0) || 0,
+      provider: getStorage(CONFIG.AI_PROVIDER, 'openai'),
+      openaiKey: getStorage(CONFIG.OPENAI_API_KEY, ''),
+      deepseekKey: getStorage(CONFIG.DEEPSEEK_API_KEY, ''),
+      deepseekModel: getStorage(CONFIG.DEEPSEEK_MODEL, '') || CONFIG.PROVIDERS.deepseek.defaultModel,
+      claudeKey: getStorage(CONFIG.CLAUDE_API_KEY, ''),
+      claudeModel: getStorage(CONFIG.CLAUDE_MODEL, '') || CONFIG.PROVIDERS.claude.defaultModel
+    };
+  }
+
+  function normalizeAiKeySettings(value) {
+    const safe = value && typeof value === 'object' ? value : {};
+    const provider = Object.prototype.hasOwnProperty.call(CONFIG.PROVIDERS, safe.provider)
+      ? safe.provider
+      : 'openai';
+    return {
+      timestamp: typeof safe.timestamp === 'number' ? safe.timestamp : 0,
+      provider,
+      openaiKey: typeof safe.openaiKey === 'string' ? safe.openaiKey : '',
+      deepseekKey: typeof safe.deepseekKey === 'string' ? safe.deepseekKey : '',
+      deepseekModel: typeof safe.deepseekModel === 'string' && safe.deepseekModel
+        ? safe.deepseekModel
+        : CONFIG.PROVIDERS.deepseek.defaultModel,
+      claudeKey: typeof safe.claudeKey === 'string' ? safe.claudeKey : '',
+      claudeModel: typeof safe.claudeModel === 'string' && safe.claudeModel
+        ? safe.claudeModel
+        : CONFIG.PROVIDERS.claude.defaultModel
+    };
+  }
+
+  function applyAiKeySettings(settings) {
+    const normalized = normalizeAiKeySettings(settings);
+    setStorage(CONFIG.AI_PROVIDER, normalized.provider);
+    setStorage(CONFIG.OPENAI_API_KEY, normalized.openaiKey);
+    setStorage(CONFIG.DEEPSEEK_API_KEY, normalized.deepseekKey);
+    setStorage(CONFIG.DEEPSEEK_MODEL, normalized.deepseekModel);
+    setStorage(CONFIG.CLAUDE_API_KEY, normalized.claudeKey);
+    setStorage(CONFIG.CLAUDE_MODEL, normalized.claudeModel);
+    setStorage(CONFIG.AI_SETTINGS_TIMESTAMP_KEY, normalized.timestamp);
+    return normalized;
+  }
+
+  const AI_KEY_CRYPTO_WORKER = String.raw`
+    const toBase64Url = (bytes) => {
+      let binary = '';
+      bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    };
+    const fromBase64Url = (value) => {
+      const padded = value.replace(/-/g, '+').replace(/_/g, '/')
+        + '='.repeat((4 - value.length % 4) % 4);
+      const binary = atob(padded);
+      return Uint8Array.from(binary, char => char.charCodeAt(0));
+    };
+    const deriveKey = async (passphrase, salt, iterations) => {
+      const password = new TextEncoder().encode(passphrase);
+      const baseKey = await crypto.subtle.importKey('raw', password, 'PBKDF2', false, ['deriveKey']);
+      return crypto.subtle.deriveKey({
+        name: 'PBKDF2',
+        salt,
+        iterations,
+        hash: 'SHA-256'
+      }, baseKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    };
+    self.onmessage = async ({ data }) => {
+      try {
+        const iterations = 250000;
+        if (data.operation === 'encrypt') {
+          const salt = crypto.getRandomValues(new Uint8Array(16));
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const key = await deriveKey(data.passphrase, salt, iterations);
+          const plaintext = new TextEncoder().encode(JSON.stringify(data.payload));
+          const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
+          self.postMessage({
+            id: data.id,
+            result: {
+              version: 1,
+              algorithm: 'PBKDF2-SHA-256/AES-256-GCM',
+              iterations,
+              salt: toBase64Url(salt),
+              iv: toBase64Url(iv),
+              ciphertext: toBase64Url(new Uint8Array(encrypted))
+            }
+          });
+          return;
+        }
+        const envelope = data.payload || {};
+        if (envelope.version !== 1 || envelope.algorithm !== 'PBKDF2-SHA-256/AES-256-GCM'
+          || !envelope.salt || !envelope.iv || !envelope.ciphertext) {
+          throw new Error('Unsupported encrypted AI key data');
+        }
+        const key = await deriveKey(
+          data.passphrase,
+          fromBase64Url(envelope.salt),
+          envelope.iterations || iterations
+        );
+        const plaintext = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: fromBase64Url(envelope.iv) },
+          key,
+          fromBase64Url(envelope.ciphertext)
+        );
+        self.postMessage({
+          id: data.id,
+          result: JSON.parse(new TextDecoder().decode(plaintext))
+        });
+      } catch (error) {
+        self.postMessage({ id: data.id, error: error.message || 'Encryption failed' });
+      }
+    };
+  `;
+
+  function runAiKeyCrypto(operation, passphrase, payload) {
+    if (typeof Worker !== 'function' || typeof Blob !== 'function' || !URL.createObjectURL) {
+      return Promise.reject(new Error('This browser cannot securely encrypt AI key sync data'));
+    }
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(new Blob([AI_KEY_CRYPTO_WORKER], { type: 'text/javascript' }));
+      const worker = new Worker(url);
+      const cleanup = () => {
+        worker.terminate();
+        URL.revokeObjectURL(url);
+      };
+      worker.onmessage = (event) => {
+        cleanup();
+        if (event.data && event.data.error) {
+          reject(new Error(event.data.error));
+          return;
+        }
+        resolve(event.data && event.data.result);
+      };
+      worker.onerror = () => {
+        cleanup();
+        reject(new Error('Could not run secure AI key encryption'));
+      };
+      worker.postMessage({ id: 1, operation, passphrase, payload });
+    });
+  }
+
+  async function syncAiKeysWithSupabase() {
+    if (!isAiKeySyncEnabled()) return null;
+    if (!aiKeySyncPassphrase) {
+      throw new Error('Enter your AI key sync passphrase before syncing encrypted keys');
+    }
+
+    const local = getLocalAiKeySettings();
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const row = await fetchSyncDocument('ai_keys');
+      let remote = null;
+      if (row) {
+        try {
+          remote = normalizeAiKeySettings(
+            await runAiKeyCrypto('decrypt', aiKeySyncPassphrase, row.payload)
+          );
+        } catch (error) {
+          throw new Error('Could not decrypt AI keys. Check the sync passphrase.');
+        }
+      }
+
+      if (!remote || local.timestamp > remote.timestamp) {
+        const payload = await runAiKeyCrypto('encrypt', aiKeySyncPassphrase, local);
+        const applied = await replaceSyncDocument('ai_keys', payload, row ? row.revision : 0);
+        if (applied) return { success: true, direction: 'uploaded' };
+        continue;
+      }
+
+      applyAiKeySettings(remote);
+      return { success: true, direction: 'downloaded' };
+    }
+    throw new Error('Cloud Sync conflict for encrypted AI keys; please retry');
+  }
+
   function getCacheAsync() {
     return new Promise(resolve => getCache(resolve));
   }
@@ -3437,14 +3620,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     });
   }
 
-  async function syncAllWithSupabase() {
+  async function syncAllWithSupabase({ syncAiKeys = Boolean(aiKeySyncPassphrase) } = {}) {
     const [cacheResult, searchesResult, keywordsResult] = await Promise.all([
       syncCacheWithSupabase(),
       syncSearchesWithSupabase(),
       syncKeywordsWithSupabase()
     ]);
+    const aiKeysResult = syncAiKeys && isAiKeySyncEnabled()
+      ? await syncAiKeysWithSupabase()
+      : null;
     setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
-    return { cacheResult, searchesResult, keywordsResult };
+    return { cacheResult, searchesResult, keywordsResult, aiKeysResult };
   }
 
   const LEGACY_GIST_SPECS = [
@@ -4153,7 +4339,28 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
               ${lastSyncTime ? `Last synced: ${new Date(lastSyncTime).toLocaleString()}` : 'Never synced'}
             </div>
             <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 10px; text-align: center;">
-              Only Vine cache data, searches, and keywords are synced. Amazon sessions and AI API keys stay on this device.
+              Vine cache data, searches, and keywords are synced. Amazon sessions always stay on this device.
+            </div>
+
+            <div style="margin-top: 16px; padding: 12px; border: 1px solid var(--vine-border); border-radius: 6px;">
+              <label style="display: flex; align-items: flex-start; gap: 8px; font-weight: 600; color: var(--vine-fg); cursor: pointer;">
+                <input type="checkbox" id="vine-sync-ai-keys" style="margin-top: 2px;">
+                <span>Sync AI API keys with encryption</span>
+              </label>
+              <div style="font-size: 11px; color: var(--vine-fg-muted); margin: 6px 0 0 24px;">
+                Keys are encrypted on this device before upload. Your passphrase is never stored or sent to Supabase.
+              </div>
+              <div id="vine-sync-ai-key-controls" style="display: none; margin: 12px 0 0 24px;">
+                <label for="vine-sync-ai-key-passphrase" style="display: block; margin-bottom: 4px; color: var(--vine-fg-muted);">Encryption passphrase</label>
+                <input type="password" id="vine-sync-ai-key-passphrase" autocomplete="new-password" placeholder="At least 12 characters"
+                  style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                <label for="vine-sync-ai-key-passphrase-confirm" style="display: block; margin: 8px 0 4px; color: var(--vine-fg-muted);">Confirm passphrase</label>
+                <input type="password" id="vine-sync-ai-key-passphrase-confirm" autocomplete="new-password" placeholder="Required on every device"
+                  style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                <div style="font-size: 11px; color: var(--vine-fg-muted); margin-top: 6px;">
+                  If you forget it, encrypted keys cannot be recovered. Turning this off stops future key sync but does not erase the encrypted cloud copy.
+                </div>
+              </div>
             </div>
 
             <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--vine-border);">
@@ -4268,6 +4475,10 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const syncAccountEmail = dialog.querySelector('#vine-sync-account-email');
       const syncConnectBtn = dialog.querySelector('#vine-sync-connect-btn');
       const syncDisconnectBtn = dialog.querySelector('#vine-sync-disconnect-btn');
+      const aiKeySyncCheckbox = dialog.querySelector('#vine-sync-ai-keys');
+      const aiKeySyncControls = dialog.querySelector('#vine-sync-ai-key-controls');
+      const aiKeySyncPassphraseInput = dialog.querySelector('#vine-sync-ai-key-passphrase');
+      const aiKeySyncPassphraseConfirmInput = dialog.querySelector('#vine-sync-ai-key-passphrase-confirm');
       const legacyGithubTokenInput = dialog.querySelector('#vine-legacy-github-token');
       const legacyImportBtn = dialog.querySelector('#vine-legacy-import-btn');
       const legacyImportNote = dialog.querySelector('#vine-legacy-import-note');
@@ -4313,6 +4524,34 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       const showStatus = makeShowStatus(statusDiv, 3000);
       closeBtn.addEventListener('click', closeSettingsModal);
+
+      const renderAiKeySyncControls = () => {
+        aiKeySyncControls.style.display = aiKeySyncCheckbox.checked ? '' : 'none';
+      };
+      aiKeySyncCheckbox.checked = isAiKeySyncEnabled();
+      renderAiKeySyncControls();
+      aiKeySyncCheckbox.addEventListener('change', () => {
+        setStorage(CONFIG.SYNC_AI_KEYS_ENABLED_KEY, aiKeySyncCheckbox.checked);
+        if (!aiKeySyncCheckbox.checked) aiKeySyncPassphrase = null;
+        renderAiKeySyncControls();
+      });
+
+      const unlockAiKeySync = () => {
+        if (!aiKeySyncCheckbox.checked) return false;
+        const passphrase = aiKeySyncPassphraseInput.value;
+        const confirmation = aiKeySyncPassphraseConfirmInput.value;
+        if (!passphrase && aiKeySyncPassphrase) return true;
+        if (passphrase.length < 12) {
+          throw new Error('Use an AI key sync passphrase with at least 12 characters');
+        }
+        if (passphrase !== confirmation) {
+          throw new Error('The AI key sync passphrases do not match');
+        }
+        aiKeySyncPassphrase = passphrase;
+        aiKeySyncPassphraseInput.value = '';
+        aiKeySyncPassphraseConfirmInput.value = '';
+        return true;
+      };
 
       aiProviderSelect.addEventListener('change', () => {
         openaiSection.style.display = aiProviderSelect.value === 'openai' ? '' : 'none';
@@ -4364,6 +4603,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         setStorage(CONFIG.DEEPSEEK_MODEL, deepseekModelInput.value.trim());
         setStorage(CONFIG.CLAUDE_API_KEY, claudeKeyInput.value.trim());
         setStorage(CONFIG.CLAUDE_MODEL, claudeModelInput.value.trim());
+        setStorage(CONFIG.AI_SETTINGS_TIMESTAMP_KEY, Date.now());
 
         cachedThresholds = newThresholds;
         autoAdvance = autoAdvanceCheckbox.checked;
@@ -4541,12 +4781,25 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         syncBtn.innerHTML = '<span>⏳</span> Syncing...';
 
         try {
-          const { cacheResult, searchesResult, keywordsResult } = await syncAllWithSupabase();
+          const syncAiKeys = unlockAiKeySync();
+          const { cacheResult, searchesResult, keywordsResult, aiKeysResult } = await syncAllWithSupabase({ syncAiKeys });
 
-          showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches, ${keywordsResult.count} keywords)`);
+          const aiKeyStatus = aiKeysResult ? ', encrypted AI keys' : '';
+          showStatus(`Sync complete! (${cacheResult.count} cached items, ${searchesResult.count} searches, ${keywordsResult.count} keywords${aiKeyStatus})`);
           renderKeywordChips();
           syncStatus.textContent = `Last synced: ${new Date().toLocaleString()}`;
           renderSearches();
+          if (aiKeysResult && aiKeysResult.direction === 'downloaded') {
+            openaiKeyInput.value = getStorage(CONFIG.OPENAI_API_KEY, '');
+            deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
+            deepseekModelInput.value = getStorage(CONFIG.DEEPSEEK_MODEL, '');
+            claudeKeyInput.value = getStorage(CONFIG.CLAUDE_API_KEY, '');
+            claudeModelInput.value = getStorage(CONFIG.CLAUDE_MODEL, '');
+            aiProviderSelect.value = getStorage(CONFIG.AI_PROVIDER, 'openai');
+            openaiSection.style.display = aiProviderSelect.value === 'openai' ? '' : 'none';
+            deepseekSection.style.display = aiProviderSelect.value === 'deepseek' ? '' : 'none';
+            claudeSection.style.display = aiProviderSelect.value === 'claude' ? '' : 'none';
+          }
         } catch (error) {
           console.error('Sync error details:', error);
           const errorMsg = error.message || String(error);

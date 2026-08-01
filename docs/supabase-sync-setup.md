@@ -11,11 +11,16 @@ authorization code to the Amazon window that opened it.
 ## 1. Supabase Project
 
 The production project is **Vine Userscript** (`jlneekyaknmfciilobtw`). Its
-initial migration has been applied and recorded in Supabase's migration
-history. For a replacement environment, create a Free project, open **SQL
-Editor**, paste
-`supabase/migrations/20260727000000_create_vine_sync_documents.sql`, and run
-it once.
+initial migration is recorded in Supabase's migration history. To enable
+encrypted AI-key sync, apply the new follow-up migration in **SQL Editor**:
+
+`supabase/migrations/20260801000000_add_encrypted_ai_key_sync.sql`
+
+For a replacement environment, create a Free project, open **SQL Editor**, and
+run these migrations in order:
+
+1. `supabase/migrations/20260727000000_create_vine_sync_documents.sql`
+2. `supabase/migrations/20260801000000_add_encrypted_ai_key_sync.sql`
 
 The migration creates three per-user JSON documents, enables Row Level
 Security, and installs a revision-checked update function. Do not put a
@@ -85,5 +90,8 @@ format and truncated Gist files. It union-merges searches and keywords and
 keeps the newest cache entry for each ASIN. After success, it removes the
 legacy token and Gist IDs from local userscript storage.
 
-The sync payload intentionally excludes Amazon cookies, AI provider keys, and
-all other local settings.
+The sync payload intentionally excludes Amazon cookies and all other local
+settings. AI provider keys are included only when the user explicitly enables
+encrypted AI-key sync and supplies a passphrase. The passphrase is never sent
+to Supabase; the `ai_keys` document contains only AES-GCM ciphertext and its
+non-secret encryption parameters.
