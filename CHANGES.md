@@ -1,5 +1,12 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.50.6 - Firefox Google Sign-In Compatibility
+
+- **Fix**: Google Cloud Sync sign-in no longer passes typed arrays through
+  Firefox userscript Xray wrappers. PKCE now uses string-only secure randomness
+  and an in-script SHA-256 calculation, avoiding the cross-realm error while
+  preserving the authorization-code flow and challenge format.
+
 ## Version 1.50.5 - Collapse After Review Submission
 
 - **Fix**: **Generate and Submit** now collapses the AI Review Generator after
