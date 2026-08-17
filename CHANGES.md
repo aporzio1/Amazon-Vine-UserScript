@@ -1,5 +1,12 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.5 - Reliable Cloud Cache Writes
+
+- **Fix**: Cloud Sync now preserves cache entries that finish price lookup
+  while a sync request is already in progress. Newly seen items upload after
+  the existing local cache-write debounce instead of waiting for the next
+  30-minute full sync.
+
 ## Version 1.51.4 - Saved Search New-Item Alerts
 
 - **Feature**: Saved searches now run automatically about every five minutes

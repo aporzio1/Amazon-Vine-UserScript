@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.4
+// @version      1.51.5
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -414,6 +414,10 @@
   const pendingCacheUpdates = new Map();
   let cacheUpdateTimeout = null;
   let firstPendingAt = 0; // when the oldest un-flushed update was queued
+  let cacheWriteGeneration = 0;
+  let cacheSyncPromise = null;
+  let cacheSyncRequested = false;
+  let cacheSyncTimer = null;
   let autoAdvanceCheckTimeout = null;
   let memoryCache = null; // In-memory cache to avoid repeated storage reads
   let cacheLoaded = false;
@@ -604,7 +608,7 @@
     });
   }
 
-  function flushCacheUpdates() {
+  function flushCacheUpdates(scheduleSync = true) {
     if (cacheUpdateTimeout) { clearTimeout(cacheUpdateTimeout); cacheUpdateTimeout = null; }
     firstPendingAt = 0;
     if (pendingCacheUpdates.size === 0) return;
@@ -620,6 +624,7 @@
     pendingCacheUpdates.forEach((value, key) => { base[key] = value; });
     pendingCacheUpdates.clear();
     setCache(base);
+    if (scheduleSync) queueCacheSync();
   }
 
   function setCachedPrice(asin, price, isSeen = true, extra = null) {
@@ -637,6 +642,7 @@
     }
     // Add to pending updates
     pendingCacheUpdates.set(asin, entry);
+    cacheWriteGeneration++;
 
     // Debounce the save, but force a flush once the oldest pending update has
     // waited CACHE_FLUSH_MAX_WAIT so a steady price stream can't defer it forever.
@@ -3569,37 +3575,88 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     return new Promise(resolve => getCache(resolve));
   }
 
-  async function syncCacheWithSupabase() {
-    flushCacheUpdates();
-    const localCache = await getCacheAsync();
-    return syncDocument('price_cache', (remoteCache) => {
-      const now = Date.now();
-      const safeLocal = localCache && typeof localCache === 'object' && !Array.isArray(localCache)
-        ? localCache
-        : {};
-      const safeRemote = remoteCache && typeof remoteCache === 'object' && !Array.isArray(remoteCache)
-        ? remoteCache
-        : {};
-      const mergedCache = {};
+  function mergeCacheEntries(remoteCache, localCache) {
+    const now = Date.now();
+    const safeLocal = localCache && typeof localCache === 'object' && !Array.isArray(localCache)
+      ? localCache
+      : {};
+    const safeRemote = remoteCache && typeof remoteCache === 'object' && !Array.isArray(remoteCache)
+      ? remoteCache
+      : {};
+    const mergedCache = {};
 
-      for (const [asin, entry] of Object.entries(safeRemote)) {
-        if (!entry || typeof entry !== 'object') continue;
-        const timestamp = typeof entry.timestamp === 'number' ? entry.timestamp : 0;
-        if (now - timestamp <= cacheTTL(entry)) mergedCache[asin] = entry;
-      }
+    for (const [asin, entry] of Object.entries(safeRemote)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const timestamp = typeof entry.timestamp === 'number' ? entry.timestamp : 0;
+      if (now - timestamp <= cacheTTL(entry)) mergedCache[asin] = entry;
+    }
 
-      for (const [asin, entry] of Object.entries(safeLocal)) {
-        if (!entry || typeof entry !== 'object') continue;
-        const localTimestamp = typeof entry.timestamp === 'number' ? entry.timestamp : 0;
-        if (now - localTimestamp > cacheTTL(entry)) continue;
-        const remoteTimestamp = mergedCache[asin] && typeof mergedCache[asin].timestamp === 'number'
-          ? mergedCache[asin].timestamp
-          : 0;
-        if (!mergedCache[asin] || localTimestamp > remoteTimestamp) mergedCache[asin] = entry;
-      }
+    for (const [asin, entry] of Object.entries(safeLocal)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const localTimestamp = typeof entry.timestamp === 'number' ? entry.timestamp : 0;
+      if (now - localTimestamp > cacheTTL(entry)) continue;
+      const remoteTimestamp = mergedCache[asin] && typeof mergedCache[asin].timestamp === 'number'
+        ? mergedCache[asin].timestamp
+        : 0;
+      if (!mergedCache[asin] || localTimestamp > remoteTimestamp) mergedCache[asin] = entry;
+    }
 
+    return mergedCache;
+  }
+
+  function queueCacheSync() {
+    if (!isSupabaseSyncConfigured() || !getStoredSyncSession()) return;
+    cacheSyncRequested = true;
+    if (cacheSyncPromise || cacheSyncTimer) return;
+
+    cacheSyncTimer = setTimeout(() => {
+      cacheSyncTimer = null;
+      if (!cacheSyncRequested) return;
+      cacheSyncRequested = false;
+      syncCacheWithSupabase().catch(error => console.error('[Vine Sync] Background cache sync failed:', error));
+    }, 0);
+  }
+
+  async function syncCacheWithSupabaseNow() {
+    // Include writes that were queued before sync began without creating a
+    // second upload. Writes arriving later are detected by the generation.
+    flushCacheUpdates(false);
+    const syncStartGeneration = cacheWriteGeneration;
+
+    return syncDocument('price_cache', async (remoteCache) => {
+      // The remote GET can take seconds. Re-read after it completes so price
+      // fetches that finished during that wait join this upload.
+      flushCacheUpdates(false);
+      const localCache = await getCacheAsync();
+      const mergedCache = mergeCacheEntries(remoteCache, localCache);
       return { payload: mergedCache, count: Object.keys(mergedCache).length };
-    }, (mergedCache) => new Promise(resolve => setCache(mergedCache, resolve)));
+    }, async (mergedCache) => {
+      // Never overwrite local writes that landed between the merge and RPC.
+      flushCacheUpdates(false);
+      const latestLocalCache = await getCacheAsync();
+      setCache(mergeCacheEntries(mergedCache, latestLocalCache));
+      if (cacheWriteGeneration > syncStartGeneration) queueCacheSync();
+    });
+  }
+
+  function syncCacheWithSupabase() {
+    if (cacheSyncPromise) return cacheSyncPromise;
+
+    const syncPromise = syncCacheWithSupabaseNow();
+    cacheSyncPromise = syncPromise;
+    syncPromise.then(
+      () => {
+        if (cacheSyncPromise !== syncPromise) return;
+        cacheSyncPromise = null;
+        if (cacheSyncRequested) queueCacheSync();
+      },
+      () => {
+        if (cacheSyncPromise !== syncPromise) return;
+        cacheSyncPromise = null;
+        if (cacheSyncRequested) queueCacheSync();
+      }
+    );
+    return syncPromise;
   }
 
   const normalizeSearches = (searches) => (Array.isArray(searches) ? searches : [])

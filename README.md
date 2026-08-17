@@ -124,7 +124,8 @@ password is required:
 1. Open **Vine Tools** on an Amazon Vine page.
 2. Select **Cloud Sync** and click **Connect with Google**.
 3. Complete the secure sign-in window.
-4. Click **Sync Now**. Future syncs run automatically at a throttled interval.
+4. Click **Sync Now**. Full syncs run automatically at a throttled interval;
+   newly cached Vine items upload after their local price-fetch batch settles.
 
 The price cache, saved searches, and keyword lists are synchronized. You can
 also opt in to encrypted AI-key sync: choose a passphrase of at least 12
