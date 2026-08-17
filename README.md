@@ -50,7 +50,9 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 - **Caching**: Caches prices for 7 days to avoid repeated fetches
 - **Unavailable Prices**: Remembers seen items even when Amazon exposes no reliable price, displays a "Price unavailable" badge, and retries the lookup after 12 hours
 - **Cache Indicator**: Shows 📦 icon for cached prices
-- **Saved Searches**: Save your favorite search terms for quick 1-click access, with the ability to reorder them
+- **Saved Search Alerts**: Rechecks saved terms about every 5 minutes while a
+  Vine page is open and notifies you when a new ASIN appears; saved rows remain
+  1-click search links
 - **Cloud Sync**: Sign in with Google to sync your price cache, saved searches, and keywords between devices
 - **Keyboard Shortcuts**: Navigate faster with keyboard shortcuts—double-tap V to open tools, ESC to close, arrow keys for pagination
 - **Settings UI**: Access settings from the "Vine Tools" link in the header navigation
@@ -74,7 +76,11 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
    same checks, clicks Amazon's Submit button only when every field succeeds,
    and collapses the panel after initiating submission
 3. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
-4. **Saved Searches**: Use the "Saved Searches" tab to add, rename (click ✏️), delete (click 🗑️ twice), and reorder (drag the ⋮⋮ handle) your favorite search terms
+4. **Saved Searches**: Use the "Saved Searches" tab to add, rename (click ✏️),
+   delete (click 🗑️ twice), and reorder (drag the ⋮⋮ handle) your favorite
+   search terms. The first automatic or manual check saves a silent baseline;
+   later ASINs trigger a notification. Use **Check saved searches now** to run
+   an immediate check.
 5. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
 6. **AI Provider**: Select OpenAI, DeepSeek, or Claude in "Price Settings" and add the corresponding API key to enable AI review generation
 7. **Hide Cached Items**: Toggle the checkbox to hide items you've already viewed (cached prices)
@@ -147,6 +153,9 @@ build. See [`docs/supabase-sync-setup.md`](docs/supabase-sync-setup.md).
 - **Prices not showing**: Make sure the script is enabled in your userscript manager
 - **Settings link not visible**: Check that you're on an Amazon Vine page (`vine.amazon.com` or `amazon.com/vine/*`). The script will automatically add the link when the page loads.
 - **Cache not working**: Check browser console for errors (F12)
+- **No saved-search alerts**: Keep at least one Amazon Vine page open and allow
+  notifications for the userscript or browser. The first successful check
+  establishes a baseline and intentionally sends no alert.
 
 ## Notes
 
@@ -154,6 +163,8 @@ build. See [`docs/supabase-sync-setup.md`](docs/supabase-sync-setup.md).
 - Prices are cached for 7 days
 - Maximum cache size is 1000 items (oldest entries are removed automatically)
 - The script uses `GM_xmlhttpRequest` to fetch prices (with localStorage fallback for storage)
+- Saved searches are checked sequentially with a short delay to reduce Amazon
+  request load; only one open Vine tab checks them at a time
 - Compatible with userscript managers that don't support all GM APIs (automatic fallbacks included)
 - Settings are stored locally using GM storage API or localStorage as fallback
 - Cloud Sync rows are isolated by the signed-in user through Supabase Row Level Security

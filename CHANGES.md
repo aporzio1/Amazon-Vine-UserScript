@@ -1,5 +1,16 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.4 - Saved Search New-Item Alerts
+
+- **Feature**: Saved searches now run automatically about every five minutes
+  while a Vine page is open and notify when previously unseen ASINs appear.
+- **Safety**: Each search establishes a silent baseline on its first successful
+  check. Searches run sequentially, share the existing Amazon throttle circuit
+  breaker, and use a cross-tab lease so multiple Vine tabs do not all poll.
+- **Enhancement**: Added **Check saved searches now**, clear result status, and
+  duplicate-term prevention to the Saved Searches tab. Userscript notifications
+  fall back to browser notifications or an in-page alert when necessary.
+
 ## Version 1.51.3 - Single Passphrase Entry for Key Restore
 
 - **Fix**: Downloading encrypted AI keys now requires the passphrase only

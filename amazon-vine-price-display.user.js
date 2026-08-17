@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.3
+// @version      1.51.4
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -18,7 +18,9 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_notification
 // @grant        GM_info
+// @connect      www.amazon.com
 // @connect      *.supabase.co
 // @connect      api.github.com
 // @connect      gist.githubusercontent.com
@@ -38,6 +40,8 @@
     AUTO_ADVANCE_KEY: 'vine_auto_advance',
     SAVED_SEARCHES_KEY: 'vine_saved_searches',
     SAVED_SEARCHES_TIMESTAMP_KEY: 'vine_saved_searches_timestamp',
+    SAVED_SEARCH_MONITOR_STATE_KEY: 'vine_saved_search_monitor_state',
+    SAVED_SEARCH_MONITOR_LEASE_KEY: 'vine_saved_search_monitor_lease',
     KEYWORD_LISTS_KEY: 'vine_keyword_lists',
     KEYWORD_LISTS_TIMESTAMP_KEY: 'vine_keyword_lists_timestamp',
     EXTERNAL_LINKS_KEY: 'vine_external_links',
@@ -68,6 +72,11 @@
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // retry "no price" lookups after 12 hours
     SYNC_MIN_INTERVAL: 30 * 60 * 1000, // 30 min — min gap between auto-syncs
+    SEARCH_MONITOR_INTERVAL: 5 * 60 * 1000,
+    SEARCH_MONITOR_INITIAL_DELAY: 10 * 1000,
+    SEARCH_MONITOR_REQUEST_DELAY: 750,
+    SEARCH_MONITOR_LEASE_DURATION: 2 * 60 * 1000,
+    SEARCH_MONITOR_MAX_SEEN_PER_TERM: 1000,
     CACHE_FLUSH_DEBOUNCE: 5000, // coalesce cache writes for 5s of idle...
     CACHE_FLUSH_MAX_WAIT: 15000, // ...but never delay a pending write past 15s
     MAX_CACHE_SIZE: 50000,
@@ -3596,6 +3605,264 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
   const normalizeSearches = (searches) => (Array.isArray(searches) ? searches : [])
     .filter(search => search && typeof search === 'object' && typeof search.term === 'string');
 
+  // ---- Saved-search monitoring ----
+  // Saved searches are polled conservatively while a Vine page is open. The
+  // first successful result for each term establishes a silent baseline;
+  // later ASINs trigger a userscript/browser notification. Monitor state is
+  // intentionally local (not cloud-synced) so a new device does not inherit a
+  // stale baseline or suppress its own first-run setup.
+  const savedSearchMonitorOwner = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let savedSearchMonitorTimer = null;
+  let savedSearchMonitorRunning = false;
+
+  function savedSearchKey(term) {
+    return encodeURIComponent(term.trim().toLowerCase());
+  }
+
+  function savedSearchUrl(term) {
+    const origin = window.location.hostname === 'vine.amazon.com'
+      ? 'https://www.amazon.com'
+      : window.location.origin;
+    const url = new URL('/vine/vine-items', origin);
+    url.searchParams.set('search', term.trim());
+    return url.href;
+  }
+
+  function parseSavedSearchResults(html, baseUrl) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const results = new Map();
+    const tiles = doc.querySelectorAll('.vvp-item-tile, [data-recommendation-id]');
+
+    tiles.forEach(tile => {
+      const input = tile.matches('input[data-recommendation-id]')
+        ? tile
+        : tile.querySelector('.vvp-details-btn input, input[data-recommendation-id]');
+      const link = tile.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]');
+      const inputAsin = input && input.dataset ? input.dataset.asin : null;
+      const asin = (inputAsin && /^[A-Z0-9]{10}$/i.test(inputAsin))
+        ? inputAsin.toUpperCase()
+        : (link ? extractASIN(link.href) : null);
+      if (!asin || results.has(asin)) return;
+
+      const fullTitle = tile.querySelector('.vvp-item-product-title-container .a-truncate-full');
+      const title = (fullTitle && fullTitle.textContent.trim())
+        || (link && link.textContent.trim())
+        || (tile.querySelector('img[alt]') && tile.querySelector('img[alt]').alt.trim())
+        || asin;
+      let itemUrl = baseUrl;
+      if (link) {
+        try { itemUrl = new URL(link.getAttribute('href'), baseUrl).href; } catch (e) { /* use search URL */ }
+      }
+      results.set(asin, { asin, title, url: itemUrl });
+    });
+
+    return Array.from(results.values());
+  }
+
+  function visibleSavedSearchMatches(term) {
+    const needle = term.trim().toLowerCase();
+    if (!needle) return [];
+    const matches = [];
+    const seen = new Set();
+    tileRegistry.forEach(item => {
+      const state = tileStates.get(item);
+      if (!state || !state.asin || seen.has(state.asin)) return;
+      const title = getTileTitle(item);
+      if (!title.toLowerCase().includes(needle)) return;
+      const link = item.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]');
+      let itemUrl = savedSearchUrl(term);
+      if (link) {
+        try { itemUrl = new URL(link.getAttribute('href'), window.location.href).href; } catch (e) { /* use search URL */ }
+      }
+      seen.add(state.asin);
+      matches.push({ asin: state.asin, title, url: itemUrl });
+    });
+    return matches;
+  }
+
+  function mergeSearchResults(...groups) {
+    const merged = new Map();
+    groups.flat().forEach(item => {
+      if (item && item.asin && !merged.has(item.asin)) merged.set(item.asin, item);
+    });
+    return Array.from(merged.values());
+  }
+
+  function showSavedSearchToast(title, text, url) {
+    const toast = document.createElement('button');
+    toast.type = 'button';
+    toast.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:100001;max-width:360px;text-align:left;background:#fff;color:#0f1111;border:1px solid #d5d9d9;border-left:5px solid #007185;border-radius:8px;padding:12px 14px;box-shadow:0 4px 18px rgba(0,0,0,.22);font:13px Arial,sans-serif;cursor:pointer;';
+    const strong = document.createElement('strong');
+    strong.textContent = title;
+    strong.style.display = 'block';
+    const body = document.createElement('span');
+    body.textContent = text;
+    body.style.cssText = 'display:block;margin-top:4px;color:#565959;line-height:1.35;';
+    toast.append(strong, body);
+    toast.addEventListener('click', () => {
+      window.open(url, '_blank', 'noopener');
+      toast.remove();
+    });
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 15000);
+  }
+
+  function notifySavedSearch(search, newItems) {
+    if (!newItems.length) return;
+    const searchUrl = savedSearchUrl(search.term);
+    const targetUrl = newItems.length === 1 ? newItems[0].url : searchUrl;
+    const title = `Vine: ${newItems.length} new ${newItems.length === 1 ? 'item' : 'items'} for “${search.name || search.term}”`;
+    const text = newItems.length === 1
+      ? newItems[0].title
+      : `${newItems[0].title} and ${newItems.length - 1} more`;
+
+    if (typeof GM_notification === 'function') {
+      GM_notification({
+        title,
+        text,
+        tag: `vine-saved-search-${savedSearchKey(search.term)}`,
+        timeout: 15000,
+        onclick: () => window.open(targetUrl, '_blank', 'noopener')
+      });
+      return;
+    }
+
+    if (typeof Notification === 'function' && Notification.permission === 'granted') {
+      const notification = new Notification(title, { body: text, tag: `vine-saved-search-${savedSearchKey(search.term)}` });
+      notification.onclick = () => {
+        window.open(targetUrl, '_blank', 'noopener');
+        notification.close();
+      };
+      return;
+    }
+
+    showSavedSearchToast(title, text, targetUrl);
+  }
+
+  async function requestSavedSearchNotificationPermission() {
+    if (typeof GM_notification === 'function') return 'granted';
+    if (typeof Notification !== 'function') return 'unavailable';
+    if (Notification.permission !== 'default') return Notification.permission;
+    try { return await Notification.requestPermission(); } catch (e) { return 'denied'; }
+  }
+
+  function acquireSavedSearchMonitorLease() {
+    const now = Date.now();
+    const lease = getStorage(CONFIG.SAVED_SEARCH_MONITOR_LEASE_KEY, null);
+    if (lease && lease.owner !== savedSearchMonitorOwner && lease.expiresAt > now) return false;
+    setStorage(CONFIG.SAVED_SEARCH_MONITOR_LEASE_KEY, {
+      owner: savedSearchMonitorOwner,
+      expiresAt: now + CONFIG.SEARCH_MONITOR_LEASE_DURATION
+    });
+    const confirmed = getStorage(CONFIG.SAVED_SEARCH_MONITOR_LEASE_KEY, null);
+    return !!(confirmed && confirmed.owner === savedSearchMonitorOwner);
+  }
+
+  function releaseSavedSearchMonitorLease() {
+    const lease = getStorage(CONFIG.SAVED_SEARCH_MONITOR_LEASE_KEY, null);
+    if (lease && lease.owner === savedSearchMonitorOwner) deleteStorage(CONFIG.SAVED_SEARCH_MONITOR_LEASE_KEY);
+  }
+
+  async function fetchSavedSearchResults(search) {
+    if (isThrottled()) throw new Error('Amazon fetches are temporarily paused');
+    const url = savedSearchUrl(search.term);
+    try {
+      const response = await gmFetch({ url });
+      if (looksLikeRobotCheck(response.responseText)) {
+        tripThrottle(null, 'saved-search robot check');
+        throw new Error('Amazon returned a robot check');
+      }
+      noteFetchSuccess();
+      return mergeSearchResults(
+        parseSavedSearchResults(response.responseText, url),
+        visibleSavedSearchMatches(search.term)
+      );
+    } catch (error) {
+      if (error && (error.status === 429 || error.status === 503)) {
+        tripThrottle(parseRetryAfterMs(error.responseHeaders), `saved search HTTP ${error.status}`);
+      }
+      throw error;
+    }
+  }
+
+  async function runSavedSearchMonitor() {
+    if (savedSearchMonitorRunning) return { skipped: 'A saved-search check is already running' };
+    const searches = normalizeSearches(getStorage(CONFIG.SAVED_SEARCHES_KEY, []))
+      .filter(search => search.term.trim());
+    const uniqueSearches = [];
+    const terms = new Set();
+    searches.forEach(search => {
+      const key = savedSearchKey(search.term);
+      if (!terms.has(key)) { terms.add(key); uniqueSearches.push(search); }
+    });
+    if (!uniqueSearches.length) return { checked: 0, initialized: 0, newItems: 0, errors: 0 };
+    if (isThrottled()) return { skipped: 'Amazon fetches are temporarily paused; try again in a few minutes' };
+    if (!acquireSavedSearchMonitorLease()) return { skipped: 'Another Vine tab is checking saved searches' };
+
+    savedSearchMonitorRunning = true;
+    const storedMonitorState = getStorage(CONFIG.SAVED_SEARCH_MONITOR_STATE_KEY, {});
+    const monitorState = storedMonitorState && typeof storedMonitorState === 'object' && !Array.isArray(storedMonitorState)
+      ? storedMonitorState
+      : {};
+    let checked = 0;
+    let initialized = 0;
+    let newItemCount = 0;
+    let errors = 0;
+
+    try {
+      for (const search of uniqueSearches) {
+        if (isThrottled()) break;
+        const key = savedSearchKey(search.term);
+        try {
+          const results = await fetchSavedSearchResults(search);
+          const previous = monitorState[key];
+          const previousSeen = new Set(previous && Array.isArray(previous.seenAsins) ? previous.seenAsins : []);
+          const newItems = previous ? results.filter(item => !previousSeen.has(item.asin)) : [];
+          const seenAsins = Array.from(new Set([
+            ...results.map(item => item.asin),
+            ...previousSeen
+          ])).slice(0, CONFIG.SEARCH_MONITOR_MAX_SEEN_PER_TERM);
+          monitorState[key] = { seenAsins, lastCheckedAt: Date.now() };
+          checked++;
+          if (!previous) initialized++;
+          if (newItems.length) {
+            newItemCount += newItems.length;
+            notifySavedSearch(search, newItems);
+          }
+        } catch (error) {
+          errors++;
+          console.error(`[Vine] Saved-search check failed for “${search.term}”`, error);
+        }
+        if (isThrottled()) break;
+        await sleep(CONFIG.SEARCH_MONITOR_REQUEST_DELAY + Math.random() * 350);
+      }
+
+      Object.keys(monitorState).forEach(key => {
+        if (!terms.has(key)) delete monitorState[key];
+      });
+      setStorage(CONFIG.SAVED_SEARCH_MONITOR_STATE_KEY, monitorState);
+      return { checked, initialized, newItems: newItemCount, errors };
+    } finally {
+      savedSearchMonitorRunning = false;
+      releaseSavedSearchMonitorLease();
+    }
+  }
+
+  function startSavedSearchMonitor() {
+    if (savedSearchMonitorTimer) return;
+    const tick = async () => {
+      savedSearchMonitorTimer = null;
+      try {
+        await runSavedSearchMonitor();
+      } catch (error) {
+        console.error('[Vine] Saved-search monitor failed', error);
+      } finally {
+        savedSearchMonitorTimer = setTimeout(tick, CONFIG.SEARCH_MONITOR_INTERVAL + Math.random() * 30000);
+      }
+    };
+    savedSearchMonitorTimer = setTimeout(tick, CONFIG.SEARCH_MONITOR_INITIAL_DELAY + Math.random() * 5000);
+  }
+
   async function syncSearchesWithSupabase() {
     const localSearches = normalizeSearches(getStorage(CONFIG.SAVED_SEARCHES_KEY, []));
     const localTimestamp = getStorage(CONFIG.SAVED_SEARCHES_TIMESTAMP_KEY, 0);
@@ -4328,8 +4595,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
               <button type="button" id="add-search-btn" class="vine-btn-primary" style="white-space: nowrap;">Add Search</button>
             </div>
             <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
-              Saved searches will appear as quick links below
+              Each term is searched automatically while a Vine page is open
             </div>
+          </div>
+
+          <div style="margin-bottom: 20px; padding: 12px; background: var(--vine-surface); border: 1px solid var(--vine-border); border-radius: 6px;">
+            <div style="font-weight: 600; color: var(--vine-fg);">New-item alerts</div>
+            <div style="font-size: 12px; line-height: 1.45; color: var(--vine-fg-muted); margin: 4px 0 10px;">
+              Checks about every 5 minutes. The first check saves a silent baseline; later items trigger a notification.
+            </div>
+            <button type="button" id="vine-check-searches-btn" class="vine-btn-secondary">Check saved searches now</button>
+            <div id="vine-search-monitor-status" role="status" aria-live="polite" style="display: none; margin-top: 8px; font-size: 12px; color: var(--vine-fg-muted);"></div>
           </div>
 
           <div style="margin-bottom: 16px;">
@@ -4990,6 +5266,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const addSearchBtn = dialog.querySelector('#add-search-btn');
       const newSearchTerm = dialog.querySelector('#new-search-term');
       const searchesList = dialog.querySelector('#saved-searches-list');
+      const checkSearchesBtn = dialog.querySelector('#vine-check-searches-btn');
+      const searchMonitorStatus = dialog.querySelector('#vine-search-monitor-status');
 
       function persistSearches(searches, statusMsg) {
         setStorage(CONFIG.SAVED_SEARCHES_KEY, searches);
@@ -5009,7 +5287,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (searches.length === 0) {
           const empty = document.createElement('div');
           empty.className = 'vine-search-empty';
-          empty.textContent = "No saved searches. Type a term above (e.g. 'usb-c hub') and press Enter to save a one-click shortcut.";
+          empty.textContent = "No saved searches. Type a term above (e.g. 'usb-c hub') and press Enter to monitor it.";
           searchesList.appendChild(empty);
           return;
         }
@@ -5042,8 +5320,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         goBtn.className = 'vine-search-go';
         goBtn.textContent = search.name;
         goBtn.setAttribute('aria-label', `Run search: ${search.name}`);
+        goBtn.title = `Open monitored search for “${search.term}”`;
         goBtn.addEventListener('click', () => {
-          window.location.href = `https://www.amazon.com/vine/vine-items?search=${encodeURIComponent(search.term)}`;
+          window.location.href = savedSearchUrl(search.term);
         });
         row.appendChild(goBtn);
 
@@ -5143,6 +5422,14 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           return;
         }
         const searches = getStorage(CONFIG.SAVED_SEARCHES_KEY, []);
+        const duplicate = searches.some(search => (
+          search && typeof search.term === 'string'
+          && search.term.trim().toLowerCase() === term.toLowerCase()
+        ));
+        if (duplicate) {
+          showStatus('That search is already saved', true);
+          return;
+        }
         searches.push({ name: term, term });
         newSearchTerm.value = '';
         persistSearches(searches, 'Search added');
@@ -5153,6 +5440,34 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (e.key === 'Enter') {
           e.preventDefault();
           addSearchBtn.click();
+        }
+      });
+
+      checkSearchesBtn.addEventListener('click', async () => {
+        checkSearchesBtn.disabled = true;
+        searchMonitorStatus.style.display = 'block';
+        searchMonitorStatus.textContent = 'Checking saved searches…';
+        try {
+          await requestSavedSearchNotificationPermission();
+          const result = await runSavedSearchMonitor();
+          if (result.skipped) {
+            searchMonitorStatus.textContent = result.skipped;
+          } else if (result.checked === 0 && result.errors > 0) {
+            searchMonitorStatus.textContent = 'The search check failed. Amazon may be temporarily limiting requests.';
+          } else if (result.checked === 0) {
+            searchMonitorStatus.textContent = 'Add a saved search first.';
+          } else {
+            const parts = [`Checked ${result.checked} ${result.checked === 1 ? 'search' : 'searches'}`];
+            if (result.initialized) parts.push(`saved ${result.initialized} silent ${result.initialized === 1 ? 'baseline' : 'baselines'}`);
+            parts.push(`${result.newItems} new ${result.newItems === 1 ? 'item' : 'items'}`);
+            if (result.errors) parts.push(`${result.errors} ${result.errors === 1 ? 'error' : 'errors'}`);
+            searchMonitorStatus.textContent = `${parts.join(' · ')}.`;
+          }
+        } catch (error) {
+          console.error('[Vine] Manual saved-search check failed', error);
+          searchMonitorStatus.textContent = 'The search check failed. Try again in a few minutes.';
+        } finally {
+          checkSearchesBtn.disabled = false;
         }
       });
 
@@ -5908,6 +6223,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       // old observePageChanges location. Infinite scroll drives its own
       // processing directly (loadNextPageInline calls processVineItems).
       createSettingsUI();
+      startSavedSearchMonitor();
       if (window.location.href.startsWith('https://www.amazon.com/vine/vine-items')) {
         createColorFilterUI();
         setupInfiniteScroll();
