@@ -79,7 +79,7 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
 4. **Saved Searches**: Use the "Saved Searches" tab to add, rename (click ✏️),
    delete (click 🗑️ twice), and reorder (drag the ⋮⋮ handle) your favorite
    search terms. The first automatic or manual check saves a silent baseline;
-   later ASINs trigger a notification. Use **Check saved searches now** to run
+   later ASINs show an in-page alert. Use **Check saved searches now** to run
    an immediate check.
 5. **Configure Price Ranges**: Set custom minimum prices for Green, Yellow, and Red categories in the "Price Settings" tab
 6. **AI Provider**: Select OpenAI, DeepSeek, or Claude in "Price Settings" and add the corresponding API key to enable AI review generation
@@ -154,9 +154,9 @@ build. See [`docs/supabase-sync-setup.md`](docs/supabase-sync-setup.md).
 - **Prices not showing**: Make sure the script is enabled in your userscript manager
 - **Settings link not visible**: Check that you're on an Amazon Vine page (`vine.amazon.com` or `amazon.com/vine/*`). The script will automatically add the link when the page loads.
 - **Cache not working**: Check browser console for errors (F12)
-- **No saved-search alerts**: Keep at least one Amazon Vine page open and allow
-  notifications for the userscript or browser. The first successful check
-  establishes a baseline and intentionally sends no alert.
+- **No saved-search alerts**: Keep at least one Amazon Vine page open. The
+  first successful check establishes a baseline and intentionally sends no
+  alert.
 
 ## Notes
 

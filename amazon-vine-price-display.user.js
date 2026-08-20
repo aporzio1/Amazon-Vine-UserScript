@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.5
+// @version      1.51.6
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -18,7 +18,6 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
-// @grant        GM_notification
 // @grant        GM_info
 // @connect      www.amazon.com
 // @connect      *.supabase.co
@@ -3665,7 +3664,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
   // ---- Saved-search monitoring ----
   // Saved searches are polled conservatively while a Vine page is open. The
   // first successful result for each term establishes a silent baseline;
-  // later ASINs trigger a userscript/browser notification. Monitor state is
+  // later ASINs trigger an in-page alert. Monitor state is
   // intentionally local (not cloud-synced) so a new device does not inherit a
   // stale baseline or suppress its own first-run setup.
   const savedSearchMonitorOwner = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -3773,34 +3772,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       ? newItems[0].title
       : `${newItems[0].title} and ${newItems.length - 1} more`;
 
-    if (typeof GM_notification === 'function') {
-      GM_notification({
-        title,
-        text,
-        tag: `vine-saved-search-${savedSearchKey(search.term)}`,
-        timeout: 15000,
-        onclick: () => window.open(targetUrl, '_blank', 'noopener')
-      });
-      return;
-    }
-
-    if (typeof Notification === 'function' && Notification.permission === 'granted') {
-      const notification = new Notification(title, { body: text, tag: `vine-saved-search-${savedSearchKey(search.term)}` });
-      notification.onclick = () => {
-        window.open(targetUrl, '_blank', 'noopener');
-        notification.close();
-      };
-      return;
-    }
-
     showSavedSearchToast(title, text, targetUrl);
-  }
-
-  async function requestSavedSearchNotificationPermission() {
-    if (typeof GM_notification === 'function') return 'granted';
-    if (typeof Notification !== 'function') return 'unavailable';
-    if (Notification.permission !== 'default') return Notification.permission;
-    try { return await Notification.requestPermission(); } catch (e) { return 'denied'; }
   }
 
   function acquireSavedSearchMonitorLease() {
@@ -4659,7 +4631,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           <div style="margin-bottom: 20px; padding: 12px; background: var(--vine-surface); border: 1px solid var(--vine-border); border-radius: 6px;">
             <div style="font-weight: 600; color: var(--vine-fg);">New-item alerts</div>
             <div style="font-size: 12px; line-height: 1.45; color: var(--vine-fg-muted); margin: 4px 0 10px;">
-              Checks about every 5 minutes. The first check saves a silent baseline; later items trigger a notification.
+              Checks about every 5 minutes. The first check saves a silent baseline; later items show an in-page alert.
             </div>
             <button type="button" id="vine-check-searches-btn" class="vine-btn-secondary">Check saved searches now</button>
             <div id="vine-search-monitor-status" role="status" aria-live="polite" style="display: none; margin-top: 8px; font-size: 12px; color: var(--vine-fg-muted);"></div>
@@ -5505,7 +5477,6 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         searchMonitorStatus.style.display = 'block';
         searchMonitorStatus.textContent = 'Checking saved searches…';
         try {
-          await requestSavedSearchNotificationPermission();
           const result = await runSavedSearchMonitor();
           if (result.skipped) {
             searchMonitorStatus.textContent = result.skipped;
