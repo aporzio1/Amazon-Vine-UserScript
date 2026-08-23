@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.7 - Force Saved-Search Alert Removal Update
+
+- **Fix**: Bumped the version after an in-page-alert release reused `1.51.6`,
+  ensuring userscript managers download the alert-removal release.
+
 ## Version 1.51.6 - Remove Saved-Search Alerts
 
 - **Removed**: Automatic saved-search polling, new-item alerts, notification
