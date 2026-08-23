@@ -107,7 +107,7 @@ function loadUserscriptHarness() {
 
   const source = fs.readFileSync(SCRIPT_PATH, 'utf8').replace(
     /\n\}\)\(\);\s*$/,
-    '\n;globalThis.__vineTestHooks = { getCacheAsync, setCache, setCachedPrice, flushCacheUpdates, syncCacheWithSupabase };\n})();'
+    '\n;globalThis.__vineTestHooks = { getCacheAsync, setCache, setCachedPrice, flushCacheUpdates, syncCacheWithSupabase, hasSavedSearchAlertMonitor: typeof startSavedSearchMonitor === \'function\' };\n})();'
   );
   vm.runInNewContext(source, context, { filename: SCRIPT_PATH });
   return {
@@ -140,4 +140,9 @@ test('sync preserves and uploads an ASIN written while its first remote write is
   const localCache = await harness.context.__vineTestHooks.getCacheAsync();
   assert.equal(localCache[LATE_ASIN].isSeen, true);
   assert.equal(harness.remoteCache[LATE_ASIN].isSeen, true);
+});
+
+test('does not run saved-search alert monitoring', () => {
+  const harness = loadUserscriptHarness();
+  assert.equal(harness.context.__vineTestHooks.hasSavedSearchAlertMonitor, false);
 });

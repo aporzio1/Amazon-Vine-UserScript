@@ -1,9 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
-## Version 1.51.6 - In-Page Saved-Search Alerts
+## Version 1.51.6 - Remove Saved-Search Alerts
 
-- **Change**: Saved-search alerts now appear only as in-page, clickable toasts.
-  The script no longer requests or sends userscript or browser notifications.
+- **Removed**: Automatic saved-search polling, new-item alerts, notification
+  requests, and manual alert checks. Saved-search management and cloud sync
+  remain available.
 
 ## Version 1.51.5 - Reliable Cloud Cache Writes
 
