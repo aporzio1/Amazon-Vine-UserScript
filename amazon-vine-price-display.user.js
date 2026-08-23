@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.7
+// @version      1.51.8
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -3653,6 +3653,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
   const normalizeSearches = (searches) => (Array.isArray(searches) ? searches : [])
     .filter(search => search && typeof search === 'object' && typeof search.term === 'string');
+
+  // Keep saved-search navigation independent from the removed alert monitor.
+  // The script can run on either Amazon Vine hostname, but saved searches must
+  // always open the canonical www.amazon.com Vine route.
+  function savedSearchUrl(term) {
+    const url = new URL('/vine/vine-items', 'https://www.amazon.com');
+    url.searchParams.set('search', String(term || '').trim());
+    return url.href;
+  }
 
   async function syncSearchesWithSupabase() {
     const localSearches = normalizeSearches(getStorage(CONFIG.SAVED_SEARCHES_KEY, []));

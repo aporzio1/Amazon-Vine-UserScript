@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.51.8 - Restore Saved-Search Links
+
+- **Fix**: Restored the saved-search URL helper after the alert-monitor removal deleted it along with unused monitoring code. Saved-search buttons now open the canonical Amazon Vine search route from every supported Vine hostname.
+
 ## Version 1.51.7 - Force Saved-Search Alert Removal Update
 
 - **Fix**: Bumped the version after an in-page-alert release reused `1.51.6`,
