@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.51.8
+// @version      1.52.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -61,6 +61,7 @@
     LEGACY_GIST_KEYWORDS_ID_KEY: 'vine_gist_keywords_id',
     LEGACY_GITHUB_IMPORTED_AT_KEY: 'vine_github_imported_at',
     LAST_SYNC_KEY: 'vine_last_sync',
+    CACHE_SYNC_REVISION_KEY: 'vine_cache_sync_revision', // last cloud revision this device applied
     SUPABASE_URL: 'https://jlneekyaknmfciilobtw.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_sqh5s7rEqpHoEX4T8JkQFw_SDvH6OC1',
     SUPABASE_AUTH_CALLBACK_URL: 'https://amazon-vine-sync-auth.pages.dev/',
@@ -3297,6 +3298,17 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     return Array.isArray(rows) && rows[0] ? rows[0] : null;
   }
 
+  // Tiny freshness probe (~bytes): just the cache row's revision, so page loads
+  // can skip the full payload transfer when no other device has written.
+  async function fetchCacheSyncRevision() {
+    const table = encodeURIComponent(CONFIG.SUPABASE_SYNC_TABLE);
+    const rows = await supabaseDataRequest(
+      `${table}?select=revision&kind=eq.price_cache`
+    );
+    const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    return row && typeof row.revision === 'number' ? row.revision : null;
+  }
+
   async function replaceSyncDocument(kind, payload, expectedRevision) {
     const result = await supabaseDataRequest('rpc/replace_vine_sync_document', 'POST', {
       p_kind: kind,
@@ -3313,17 +3325,21 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const remotePayload = row && row.payload && typeof row.payload === 'object'
         ? row.payload
         : {};
+      const remoteRevision = row && typeof row.revision === 'number' ? row.revision : 0;
       const merged = await mergePayload(remotePayload);
 
       if (JSON.stringify(merged.payload) === JSON.stringify(remotePayload)) {
         await applyLocal(merged.payload);
-        return { success: true, count: merged.count };
+        return { success: true, count: merged.count, revision: remoteRevision };
       }
 
       const applied = await replaceSyncDocument(kind, merged.payload, row ? row.revision : 0);
       if (applied) {
         await applyLocal(merged.payload);
-        return { success: true, count: merged.count };
+        // The CAS RPC bumps the revision by one on success. If the server ever
+        // diverges from that, the next probe just triggers one extra full sync
+        // and re-stores the observed value — self-healing, never stuck.
+        return { success: true, count: merged.count, revision: remoteRevision + 1 };
       }
     }
     throw new Error(`Cloud Sync conflict for ${kind}; please retry`);
@@ -3596,6 +3612,28 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     return mergedCache;
   }
 
+  // Cross-device seen flags: after a cloud merge lands, flip tiles already on
+  // screen whose cache entry says another device saw them, then re-run the
+  // filter so "Hide Seen" takes effect without waiting for the next page load.
+  // Only ever flips unseen -> seen; a shown tile never un-hides mid-session.
+  function applyCacheSeenToTiles(cache) {
+    if (!cache || typeof cache !== 'object') return;
+    let changed = false;
+    tileRegistry.forEach((item) => {
+      if (!item.isConnected) return;
+      const s = tileStates.get(item);
+      if (!s || !s.asin || s.seen) return;
+      const entry = cache[s.asin];
+      if (!entry || typeof entry !== 'object') return;
+      if (entry.isSeen === true) {
+        s.seen = true;
+        s.seenPersisted = true; // the cache already says seen — nothing to write back
+        changed = true;
+      }
+    });
+    if (changed) applyColorFilterToAllItems();
+  }
+
   function queueCacheSync() {
     if (!isSupabaseSyncConfigured() || !getStoredSyncSession()) return;
     cacheSyncRequested = true;
@@ -3615,7 +3653,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     flushCacheUpdates(false);
     const syncStartGeneration = cacheWriteGeneration;
 
-    return syncDocument('price_cache', async (remoteCache) => {
+    const result = await syncDocument('price_cache', async (remoteCache) => {
       // The remote GET can take seconds. Re-read after it completes so price
       // fetches that finished during that wait join this upload.
       flushCacheUpdates(false);
@@ -3626,9 +3664,16 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       // Never overwrite local writes that landed between the merge and RPC.
       flushCacheUpdates(false);
       const latestLocalCache = await getCacheAsync();
-      setCache(mergeCacheEntries(mergedCache, latestLocalCache));
+      const finalCache = mergeCacheEntries(mergedCache, latestLocalCache);
+      setCache(finalCache);
+      // Items another device already saw hide on THIS page, not the next one.
+      applyCacheSeenToTiles(finalCache);
       if (cacheWriteGeneration > syncStartGeneration) queueCacheSync();
     });
+    if (typeof result.revision === 'number') {
+      setStorage(CONFIG.CACHE_SYNC_REVISION_KEY, result.revision);
+    }
+    return result;
   }
 
   function syncCacheWithSupabase() {
@@ -5954,27 +5999,37 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       watchGridLayout(); // keep badge overlays glued to tiles across layout changes
 
       // Auto-sync if this device is connected. Cache-expiry cleanup is deferred in getCache.
-      // Throttled to at most once per SYNC_MIN_INTERVAL across page loads/tabs
-      // so navigating Vine doesn't re-transfer the whole cache blob every time.
+      // Every page load makes a tiny revision probe (~bytes); the full sync runs
+      // only when another device actually wrote since we last applied (so seen
+      // flags cross devices fast) or when the freshness window lapsed. Blindly
+      // skipping for 30 min made items seen on one device stay visible on the
+      // next — the probe keeps navigation cheap without that staleness.
       const syncFreshEnough = () =>
         (Date.now() - (getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0)) < CONFIG.SYNC_MIN_INTERVAL;
-      if (isSupabaseSyncConfigured() && getStoredSyncSession() && !syncFreshEnough()) {
-        // Jitter so multiple open tabs don't all sync at once.
-        setTimeout(() => {
-          if (syncFreshEnough()) {
-            console.log('Vine Price Display: Auto-sync skipped (recently synced)');
-            return;
+      if (isSupabaseSyncConfigured() && getStoredSyncSession()) {
+        // Small jitter so multiple open tabs don't all probe at the same instant.
+        setTimeout(async () => {
+          try {
+            let needsSync = !syncFreshEnough();
+            if (!needsSync) {
+              const remoteRevision = await fetchCacheSyncRevision();
+              const lastApplied = getStorage(CONFIG.CACHE_SYNC_REVISION_KEY, null);
+              needsSync = remoteRevision !== null && remoteRevision !== lastApplied;
+            }
+            if (!needsSync) {
+              console.log('Vine Price Display: Auto-sync skipped (cloud unchanged)');
+              return;
+            }
+            console.log('Vine Price Display: Starting auto-sync...');
+            const { cacheResult, searchesResult, keywordsResult } = await syncAllWithSupabase();
+            console.log(
+              `Vine Price Display: Auto-sync complete (${cacheResult.count} cached items, `
+              + `${searchesResult.count} searches, ${keywordsResult.count} keywords)`
+            );
+          } catch (err) {
+            console.error('Vine Price Display: Auto-sync failed', err);
           }
-          console.log('Vine Price Display: Starting auto-sync...');
-          syncAllWithSupabase()
-            .then(({ cacheResult, searchesResult, keywordsResult }) => {
-              console.log(
-                `Vine Price Display: Auto-sync complete (${cacheResult.count} cached items, `
-                + `${searchesResult.count} searches, ${keywordsResult.count} keywords)`
-              );
-            })
-            .catch(err => console.error('Vine Price Display: Auto-sync failed', err));
-        }, 2000 + Math.random() * 3000);
+        }, 800 + Math.random() * 1200);
       }
 
       // NOTE: no MutationObserver here anymore — see removal notes near the
