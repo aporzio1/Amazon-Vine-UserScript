@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.52.0
+// @version      1.52.1
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -3612,28 +3612,15 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     return mergedCache;
   }
 
-  // Cross-device seen flags: after a cloud merge lands, flip tiles already on
-  // screen whose cache entry says another device saw them, then re-run the
-  // filter so "Hide Seen" takes effect without waiting for the next page load.
-  // Only ever flips unseen -> seen; a shown tile never un-hides mid-session.
-  function applyCacheSeenToTiles(cache) {
-    if (!cache || typeof cache !== 'object') return;
-    let changed = false;
-    tileRegistry.forEach((item) => {
-      if (!item.isConnected) return;
-      const s = tileStates.get(item);
-      if (!s || !s.asin || s.seen) return;
-      const entry = cache[s.asin];
-      if (!entry || typeof entry !== 'object') return;
-      if (entry.isSeen === true) {
-        s.seen = true;
-        s.seenPersisted = true; // the cache already says seen — nothing to write back
-        changed = true;
-      }
-    });
-    if (changed) applyColorFilterToAllItems();
-  }
-
+  // NOTE (v1.52.1): do NOT flip on-screen tiles to seen from a synced cache
+  // entry. `isSeen` in the cache means "has been displayed to a user", and
+  // BOTH local write paths set it true for items visible right now — the fetch
+  // path caches `priorIsSeen || isVisible`, and applyColorFilter deliberately
+  // bumps a shown tile to seen for the NEXT session while keeping state.seen
+  // false for this one. Reading that flag back onto live tiles (v1.52.0) made
+  // brand-new items hide themselves seconds after they appeared. Cross-device
+  // seen flags land in the local cache at page load via the revision probe and
+  // take effect the next time tiles are processed, which is the correct point.
   function queueCacheSync() {
     if (!isSupabaseSyncConfigured() || !getStoredSyncSession()) return;
     cacheSyncRequested = true;
@@ -3664,10 +3651,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       // Never overwrite local writes that landed between the merge and RPC.
       flushCacheUpdates(false);
       const latestLocalCache = await getCacheAsync();
-      const finalCache = mergeCacheEntries(mergedCache, latestLocalCache);
-      setCache(finalCache);
-      // Items another device already saw hide on THIS page, not the next one.
-      applyCacheSeenToTiles(finalCache);
+      setCache(mergeCacheEntries(mergedCache, latestLocalCache));
       if (cacheWriteGeneration > syncStartGeneration) queueCacheSync();
     });
     if (typeof result.revision === 'number') {
