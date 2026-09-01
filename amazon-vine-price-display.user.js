@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.52.1
+// @version      1.53.0
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -69,6 +69,7 @@
     LAST_ACTIVE_TAB_KEY: 'vine_last_active_tab',
     CACHE_DURATION: 7 * 24 * 60 * 60 * 1000, // 7 days
     NEGATIVE_CACHE_DURATION: 12 * 60 * 60 * 1000, // retry "no price" lookups after 12 hours
+    APPROX_PRICE_TTL: 6 * 60 * 60 * 1000, // serve ~approx (parent/wrong-variant) prices from cache this long
     SYNC_MIN_INTERVAL: 30 * 60 * 1000, // 30 min — min gap between auto-syncs
     CACHE_FLUSH_DEBOUNCE: 5000, // coalesce cache writes for 5s of idle...
     CACHE_FLUSH_MAX_WAIT: 15000, // ...but never delay a pending write past 15s
@@ -791,6 +792,13 @@
 
   function noteFetchSuccess() {
     throttleStrikes = 0;
+    // Adaptive concurrency: after a sustained run of clean responses, allow one
+    // more parallel fetch (3→4→5). Any throttle signal drops straight back to 3.
+    if (dpConcurrency < DP_MAX_CONCURRENT && ++dpSuccessStreak >= 12) {
+      dpSuccessStreak = 0;
+      dpConcurrency++;
+      pumpDpQueue(); // a slot just opened up
+    }
   }
 
   function tripThrottle(retryAfterMs, source) {
@@ -799,6 +807,8 @@
       : Math.min(THROTTLE_BASE_COOLDOWN_MS * Math.pow(2, throttleStrikes), THROTTLE_MAX_COOLDOWN_MS);
     throttledUntil = Math.max(throttledUntil, Date.now() + cooldown);
     throttleStrikes++;
+    dpConcurrency = DP_MIN_CONCURRENT;
+    dpSuccessStreak = 0;
     console.warn(`[Vine] Amazon throttling detected (${source}) — pausing fetches for ${Math.round(cooldown / 1000)}s`);
     showThrottleIndicator(throttledUntil);
     setTimeout(() => {
@@ -840,38 +850,73 @@
   // and space completions out with jitter.
   const dpQueue = [];
   let dpActive = 0;
-  const DP_MAX_CONCURRENT = 3;
+  const DP_MIN_CONCURRENT = 3;
+  const DP_MAX_CONCURRENT = 5;
   const DP_DELAY_MIN_MS = 100;
   const DP_DELAY_MAX_MS = 300;
+  // Ramped by noteFetchSuccess (3→4→5 while responses stay clean), reset to the
+  // floor by tripThrottle on any throttle signal.
+  let dpConcurrency = DP_MIN_CONCURRENT;
+  let dpSuccessStreak = 0;
+
+  // Serve the queue viewport-first: each time a slot frees, run the task whose
+  // tile is closest to what the user is looking at (recomputed per pump, so it
+  // follows scrolling). Tasks without a live tile and hidden tiles keep FIFO
+  // order behind the visible ones.
+  function dpQueueTakeNext() {
+    if (dpQueue.length === 0) return null;
+    const viewportMid = window.scrollY + window.innerHeight / 2;
+    let bestIdx = 0;
+    let bestScore = Infinity;
+    for (let i = 0; i < dpQueue.length; i++) {
+      const el = dpQueue[i].el;
+      let score;
+      if (!el || !el.isConnected) {
+        score = 1e12 + i;
+      } else {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) {
+          score = 1e9 + i; // filtered/hidden tile — fetch last
+        } else {
+          score = Math.abs(rect.top + window.scrollY + rect.height / 2 - viewportMid);
+        }
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    return dpQueue.splice(bestIdx, 1)[0];
+  }
 
   function pumpDpQueue() {
     if (isThrottled()) return; // tripThrottle re-pumps after the cooldown
-    while (dpActive < DP_MAX_CONCURRENT && dpQueue.length > 0) {
-      const task = dpQueue.shift();
+    while (dpActive < dpConcurrency && dpQueue.length > 0) {
+      const task = dpQueueTakeNext();
       dpActive++;
-      task(() => {
+      task.run(() => {
         dpActive--;
         setTimeout(pumpDpQueue, DP_DELAY_MIN_MS + Math.random() * (DP_DELAY_MAX_MS - DP_DELAY_MIN_MS));
       });
     }
   }
 
-  function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES, requeues = 0) {
+  function fetchPrice(url, asin, callback, retries = CONFIG.MAX_RETRIES, requeues = 0, el = null) {
     if (!isValidAmazonURL(url)) {
       callback(null);
       return;
     }
-    dpQueue.push((done) => fetchPriceNow(url, asin, callback, retries, requeues, done));
+    dpQueue.push({ el, run: (done) => fetchPriceNow(url, asin, callback, retries, requeues, el, done) });
     pumpDpQueue();
   }
 
-  function fetchPriceNow(url, asin, callback, retries, requeues, done) {
-    // Transient failure: free the slot, back off, rejoin the queue tail.
+  function fetchPriceNow(url, asin, callback, retries, requeues, el, done) {
+    // Transient failure: free the slot, back off, rejoin the queue.
     const retry = () => {
       done();
       if (retries > 0) {
         const delay = CONFIG.RETRY_BASE_DELAY * Math.pow(2, CONFIG.MAX_RETRIES - retries);
-        setTimeout(() => fetchPrice(url, asin, callback, retries - 1, requeues), delay);
+        setTimeout(() => fetchPrice(url, asin, callback, retries - 1, requeues, el), delay);
       } else {
         callback(null);
       }
@@ -884,7 +929,7 @@
       if (requeues >= THROTTLE_REQUEUE_LIMIT) {
         callback(null);
       } else {
-        fetchPrice(url, asin, callback, retries, requeues + 1);
+        fetchPrice(url, asin, callback, retries, requeues + 1, el);
       }
     };
 
@@ -926,7 +971,7 @@
   // A parent tile's link goes to /dp/{parentAsin}, where Amazon renders the
   // default child's buybox — so the shown price can belong to a different
   // variant than Vine offers. We surface that price marked APPROXIMATE (and
-  // never cache it); exact variant prices/ETV only come from the user opening
+  // served from cache for APPROX_PRICE_TTL); exact variant prices/ETV only come from the user opening
   // Amazon's own "See details" modal.
   //
   // WARNING — never call /vine/api/recommendations/* from this script.
@@ -936,10 +981,10 @@
   // root-caused by the v1.46–v1.48 bisection (PRs #6/#8) after every DOM
   // theory failed — do not reintroduce a call to that endpoint, on-demand or
   // otherwise.
-  function fetchParentPrices(parentUrl, callback) {
+  function fetchParentPrices(parentUrl, callback, el = null) {
     fetchPrice(parentUrl, null, (data) => {
       callback(data ? { price: data.price, approx: true } : null);
-    });
+    }, CONFIG.MAX_RETRIES, 0, el);
   }
 
   // UI helpers — called per-item on hot paths. getThresholds() handles format migration once at load.
@@ -1453,11 +1498,17 @@
           // Entries cached before parent detection existed hold the parent
           // page's default-child price (the wrong product) — refetch them.
           const staleParentEntry = isParent && cached && !cached.isParent;
-          // Approx (wrong-variant) entries are never served directly — the
-          // price could be for the wrong product — but we still remember
-          // whether the user already saw this tile so it doesn't come back
-          // every reload just because we have to refetch its price.
-          const staleApproxEntry = !!(cached && cached.approx === true);
+          // Approx (parent/wrong-variant) prices are served from cache while
+          // fresh — since the rec-API removal every multi-variant tile is
+          // approx, so refetching them all on every page load was most of the
+          // fetch traffic. Stale ones refetch (their isSeen still carries over,
+          // and the entry itself keeps the full cache TTL for that purpose).
+          const staleApproxEntry = !!(
+            cached
+            && cached.approx === true
+            && !(typeof cached.timestamp === 'number'
+              && Date.now() - cached.timestamp <= CONFIG.APPROX_PRICE_TTL)
+          );
           const staleNoPriceEntry = noPriceNeedsRetry(cached);
           if (cached && !staleParentEntry && !staleApproxEntry && cached.price !== undefined && cached.price !== null) {
             const s = tileState(item);
@@ -1465,13 +1516,14 @@
             s.price = cached.price;
             if (cached.priceMax != null) s.priceMax = cached.priceMax;
             s.isEtv = !!cached.isEtv;
+            s.approx = cached.approx === true;
             // Default to true for legacy cache entries without isSeen property
             const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
             s.seen = !!isSeen;
 
             const color = getPriceColorSync(cached.price);
             const badge = createPriceBadge(
-              { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv },
+              { price: cached.price, priceMax: cached.priceMax, isEtv: cached.isEtv, approx: cached.approx === true },
               true, isSeen, color
             );
             attachExternalLinks(badge, asin, getTileTitle(item));
@@ -1587,7 +1639,7 @@
           };
 
           if (isParent) {
-            fetchParentPrices(url, handleResult);
+            fetchParentPrices(url, handleResult, item);
           } else {
             fetchPrice(url, asin, (data) => {
               if (data && data.unreliable) {
@@ -1595,7 +1647,7 @@
               } else {
                 handleResult(data);
               }
-            });
+            }, CONFIG.MAX_RETRIES, 0, item);
           }
         });
 
