@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.5 - Keep Newly Confirmed Items Visible
+
+- **Fix**: Newly cached items remain visible during the current session instead of being immediately hidden by the Hide Seen filter; their confirmed seen state still applies on the next session.
+
 ## Version 1.53.4 - Keep New Items On Current Page
 
 - **Fix**: Auto-advance now waits for pending price/cache work and only advances when every hidden item was already seen before the current page processing pass.

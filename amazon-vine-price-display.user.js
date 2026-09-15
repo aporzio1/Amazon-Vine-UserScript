@@ -1682,9 +1682,11 @@
                 // cloud-backed cache write has been acknowledged.
                 const renderConfirmedPrice = () => {
                   s.isCached = true;
-                  s.seen = true;
+                  // Keep a newly confirmed item visible for this session. Its
+                  // confirmed cache entry is seen, so the next session can hide it.
+                  s.seen = priorIsSeen;
                   s.seenPersisted = true;
-                  const badge = createPriceBadge(priceData, true, true, color);
+                  const badge = createPriceBadge(priceData, true, priorIsSeen, color);
                   attachExternalLinks(badge, asin, getTileTitle(item));
                   attachBadgeToTile(item, badge);
                   applyColorFilter(item, color);
