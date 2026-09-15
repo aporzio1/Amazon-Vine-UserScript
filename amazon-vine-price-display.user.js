@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.0
+// @version      1.53.2
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -260,14 +260,58 @@
 
   // ---- Network helpers (shared across AI, Supabase, and product-page fetches) ----
   function gmFetch({ method = 'GET', url, headers, data }) {
+    let requestData = data;
+    let uploadedSeenMarkers = null;
+    if (url.includes('/rest/v1/rpc/replace_vine_sync_document') && typeof data === 'string') {
+      try {
+        const body = JSON.parse(data);
+        if (body.p_kind === 'price_cache' && body.p_payload && typeof body.p_payload === 'object') {
+          uploadedSeenMarkers = new Map();
+          pendingSeenUpdates.forEach((marker, asin) => {
+            const entry = body.p_payload[asin];
+            if (entry && entry.timestamp === marker.timestamp) {
+              body.p_payload[asin] = { ...entry, isSeen: true };
+              uploadedSeenMarkers.set(asin, marker);
+            }
+          });
+          requestData = JSON.stringify(body);
+        }
+      } catch (error) {
+        // Leave unrelated or malformed requests untouched.
+      }
+    }
+
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method,
         url,
         headers,
-        ...(data != null ? { data } : {}),
+        ...(requestData != null ? { data: requestData } : {}),
         onload: (response) => {
           if (response.status >= 200 && response.status < 300) {
+            if (uploadedSeenMarkers && uploadedSeenMarkers.size > 0) {
+              let applied = true;
+              try {
+                const result = JSON.parse(response.responseText || 'null');
+                const row = Array.isArray(result) ? result[0] : result;
+                applied = Boolean(row && row.applied);
+              } catch (error) {
+                applied = false;
+              }
+              if (applied) {
+                getCache((cache) => {
+                  const confirmed = { ...cache };
+                  uploadedSeenMarkers.forEach((marker, asin) => {
+                    const entry = confirmed[asin];
+                    if (entry && entry.timestamp === marker.timestamp) {
+                      confirmed[asin] = { ...entry, isSeen: true };
+                      pendingSeenUpdates.delete(asin);
+                    }
+                  });
+                  setCache(confirmed);
+                });
+              }
+            }
             resolve(response);
           } else {
             const err = new Error(`HTTP ${response.status} ${response.statusText || ''}`.trim());
@@ -409,9 +453,14 @@
   let cacheUpdateTimeout = null;
   let firstPendingAt = 0; // when the oldest un-flushed update was queued
   let cacheWriteGeneration = 0;
+  // A displayed item is kept locally as unseen until the cache upload that
+  // contains its seen flag is acknowledged by Supabase. The timestamp lets us
+  // avoid confirming a newer local observation from an older request.
+  const pendingSeenUpdates = new Map();
   let cacheSyncPromise = null;
   let cacheSyncRequested = false;
   let cacheSyncTimer = null;
+
   let autoAdvanceCheckTimeout = null;
   let memoryCache = null; // In-memory cache to avoid repeated storage reads
   let cacheLoaded = false;
@@ -622,10 +671,16 @@
   }
 
   function setCachedPrice(asin, price, isSeen = true, extra = null) {
+    const gateSeenUntilCloudAck = isSeen
+      && isSupabaseSyncConfigured()
+      && Boolean(getStoredSyncSession());
+    const timestamp = Date.now();
     const entry = {
       price: price,
-      isSeen: isSeen,
-      timestamp: Date.now()
+      // Do not let Hide Seen consume a local-only claim. The upload path
+      // promotes this entry in its request, then confirms it after success.
+      isSeen: gateSeenUntilCloudAck ? false : isSeen,
+      timestamp
     };
     if (extra) {
       if (extra.priceMax != null && extra.priceMax > price) entry.priceMax = extra.priceMax;
@@ -637,6 +692,11 @@
     // Add to pending updates
     pendingCacheUpdates.set(asin, entry);
     cacheWriteGeneration++;
+    if (gateSeenUntilCloudAck) {
+      pendingSeenUpdates.set(asin, { timestamp, generation: cacheWriteGeneration });
+    } else {
+      pendingSeenUpdates.delete(asin);
+    }
 
     // Debounce the save, but force a flush once the oldest pending update has
     // waited CACHE_FLUSH_MAX_WAIT so a steady price stream can't defer it forever.
@@ -6031,8 +6091,19 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       getThresholds(() => { });
       getHideCached(() => { });
       getColorFilter(() => { });
-      processVineItems(true);
-      watchGridLayout(); // keep badge overlays glued to tiles across layout changes
+      const processInitialVineItems = () => {
+        processVineItems(true);
+        watchGridLayout(); // keep badge overlays glued to tiles across layout changes
+      };
+
+      const hasCloudSync = isSupabaseSyncConfigured() && getStoredSyncSession();
+      if (hasCloudSync) {
+        syncAllWithSupabase().catch(err => {
+          console.error('Vine Price Display: Initial sync failed; using local cache', err);
+        }).then(processInitialVineItems);
+      } else {
+        processInitialVineItems();
+      }
 
       // Auto-sync if this device is connected. Cache-expiry cleanup is deferred in getCache.
       // Every page load makes a tiny revision probe (~bytes); the full sync runs

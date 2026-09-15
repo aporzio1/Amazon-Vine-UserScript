@@ -1,5 +1,15 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.2 - Sync Before Initial Grid Render
+
+- **Fix**: Connected devices now complete the initial cloud sync before processing Vine items, preventing stale local seen state from appearing during startup.
+- **Fallback**: If cloud sync fails, the local cache is still rendered.
+
+## Version 1.53.1 - Verify Seen State Before Promotion
+
+- **Fix**: Cloud-backed seen flags now remain local-only until the cache entry has been uploaded and the acknowledged `isSeen` value is successfully written to Supabase.
+- **Fix**: Failed verification restores the item to unseen so a transient cloud failure cannot hide it on another device.
+
 ## Version 1.51.8 - Restore Saved-Search Links
 
 - **Fix**: Restored the saved-search URL helper after the alert-monitor removal deleted it along with unused monitoring code. Saved-search buttons now open the canonical Amazon Vine search route from every supported Vine hostname.
