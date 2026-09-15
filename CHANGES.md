@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.3 - Wait For Confirmed Item Cache
+
+- **Fix**: Freshly fetched item prices are not rendered on connected devices until Supabase confirms the cache write.
+- **Enhancement**: Confirmed fresh results are rendered as cached/seen, making it clear that the item is safe to leave behind.
+
 ## Version 1.53.2 - Sync Before Initial Grid Render
 
 - **Fix**: Connected devices now complete the initial cloud sync before processing Vine items, preventing stale local seen state from appearing during startup.

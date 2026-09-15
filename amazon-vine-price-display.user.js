@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.2
+// @version      1.53.3
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -306,6 +306,11 @@
                     if (entry && entry.timestamp === marker.timestamp) {
                       confirmed[asin] = { ...entry, isSeen: true };
                       pendingSeenUpdates.delete(asin);
+                      const confirmation = pendingCacheConfirmations.get(asin);
+                      if (confirmation && confirmation.timestamp === marker.timestamp) {
+                        pendingCacheConfirmations.delete(asin);
+                        confirmation.onConfirmed();
+                      }
                     }
                   });
                   setCache(confirmed);
@@ -457,6 +462,7 @@
   // contains its seen flag is acknowledged by Supabase. The timestamp lets us
   // avoid confirming a newer local observation from an older request.
   const pendingSeenUpdates = new Map();
+  const pendingCacheConfirmations = new Map();
   let cacheSyncPromise = null;
   let cacheSyncRequested = false;
   let cacheSyncTimer = null;
@@ -711,6 +717,7 @@
     } else {
       cacheUpdateTimeout = setTimeout(flushCacheUpdates, CONFIG.CACHE_FLUSH_DEBOUNCE);
     }
+    return { timestamp, cloudPending: gateSeenUntilCloudAck };
   }
 
   // Price extraction
@@ -1660,24 +1667,34 @@
                 // read path above never trusts the cached price itself —
                 // only the isSeen flag is reused; the price is refetched
                 // fresh every time.
-                setCachedPrice(asin, priceData.price, priorIsSeen || isVisible, {
+                const cacheWrite = setCachedPrice(asin, priceData.price, priorIsSeen || isVisible, {
                   priceMax: priceData.priceMax,
                   isParent,
                   isEtv: priceData.isEtv,
                   approx: priceData.approx || undefined
                 });
 
-                // Carry forward whether this tile was already marked seen in
-                // a prior session (relevant for approx tiles, which always
-                // land here since their price can't be served from cache).
-                s.seen = !!priorIsSeen;
+                // Connected devices do not display a fresh result until the
+                // cloud-backed cache write has been acknowledged.
+                const renderConfirmedPrice = () => {
+                  s.isCached = true;
+                  s.seen = true;
+                  s.seenPersisted = true;
+                  const badge = createPriceBadge(priceData, true, true, color);
+                  attachExternalLinks(badge, asin, getTileTitle(item));
+                  attachBadgeToTile(item, badge);
+                  applyColorFilter(item, color);
+                  scheduleSortRefresh();
+                };
+                if (cacheWrite.cloudPending) {
+                  pendingCacheConfirmations.set(asin, {
+                    timestamp: cacheWrite.timestamp,
+                    onConfirmed: renderConfirmedPrice
+                  });
+                } else {
+                  renderConfirmedPrice();
+                }
               });
-
-              const badge = createPriceBadge(priceData, false, priorIsSeen, color);
-              attachExternalLinks(badge, asin, getTileTitle(item));
-              attachBadgeToTile(item, badge);
-              applyColorFilter(item, color);
-              scheduleSortRefresh();
             } else {
               // Genuine no-price result (not a throttle abort): remember it so
               // this item doesn't re-fetch on every page load.
