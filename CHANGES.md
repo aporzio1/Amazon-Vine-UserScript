@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.6 - Reduce Safe Startup Sync Work
+
+- **Performance**: Only the price-cache sync blocks the initial Vine grid; saved searches and keyword lists synchronize in the background.
+- **Performance**: A revision probe skips redundant full cache transfers when the cloud document is unchanged. Amazon request throttling and concurrency limits are unchanged.
+
 ## Version 1.53.5 - Keep Newly Confirmed Items Visible
 
 - **Fix**: Newly cached items remain visible during the current session instead of being immediately hidden by the Hide Seen filter; their confirmed seen state still applies on the next session.

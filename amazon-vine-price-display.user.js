@@ -6124,8 +6124,32 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       const hasCloudSync = isSupabaseSyncConfigured() && getStoredSyncSession();
       if (hasCloudSync) {
-        syncAllWithSupabase().catch(err => {
-          console.error('Vine Price Display: Initial sync failed; using local cache', err);
+        const syncInitialCache = async () => {
+          const lastSync = getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0;
+          const lastRevision = getStorage(CONFIG.CACHE_SYNC_REVISION_KEY, null);
+          const recentlySynced = (Date.now() - lastSync) < CONFIG.SYNC_MIN_INTERVAL;
+          if (pendingCacheUpdates.size === 0 && recentlySynced && lastRevision !== null) {
+            try {
+              const remoteRevision = await fetchCacheSyncRevision();
+              if (remoteRevision === lastRevision) {
+                console.log('Vine Price Display: Initial cache sync skipped (cloud unchanged)');
+                return null;
+              }
+            } catch (err) {
+              console.warn('Vine Price Display: Cache revision probe failed; performing full sync', err);
+            }
+          }
+          return syncCacheWithSupabase();
+        };
+
+        // Only the price cache gates the initial grid. These independent
+        // documents can synchronize without delaying item rendering.
+        Promise.all([syncSearchesWithSupabase(), syncKeywordsWithSupabase()])
+          .catch(err => console.error('Vine Price Display: Background settings sync failed', err));
+        syncInitialCache().then(() => {
+          setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
+        }).catch(err => {
+          console.error('Vine Price Display: Initial cache sync failed; using local cache', err);
         }).then(processInitialVineItems);
       } else {
         processInitialVineItems();
