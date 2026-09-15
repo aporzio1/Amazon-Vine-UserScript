@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.3
+// @version      1.53.4
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1159,7 +1159,7 @@
         asin: null, isParent: false,
         price: null, priceMax: null, isEtv: false, approx: false,
         isCached: false, noPrice: false,
-        seen: false, seenPersisted: false,
+        seen: false, seenPersisted: false, wasSeenBeforeLoad: false,
         hidden: false, color: null,
         preRelease: null, title: null, kwState: null, kwRev: -1,
         processed: false, overlay: null, badge: null, highlightBox: null
@@ -1586,6 +1586,7 @@
             s.approx = cached.approx === true;
             // Default to true for legacy cache entries without isSeen property
             const isSeen = cached.isSeen !== undefined ? cached.isSeen : true;
+            s.wasSeenBeforeLoad = !!isSeen;
             s.seen = !!isSeen;
 
             const color = getPriceColorSync(cached.price);
@@ -1608,6 +1609,7 @@
             const s = tileState(item);
             s.isCached = true;
             s.noPrice = true;
+            s.wasSeenBeforeLoad = true;
             s.seen = true;
             const badge = createUnavailablePriceBadge(true, true);
             attachExternalLinks(badge, asin, getTileTitle(item));
@@ -1622,6 +1624,7 @@
             );
             if (priorIsSeen) {
               const s = tileState(item);
+              s.wasSeenBeforeLoad = priorIsSeen;
               s.seen = true;
               s.noPrice = Boolean(cached && cached.noPrice);
               if (s.noPrice) {
@@ -1659,6 +1662,7 @@
               if (priceData.approx) s.approx = true;
 
               // Calculate visibility (isSeen) based on filters
+              s.wasSeenBeforeLoad = priorIsSeen;
               getColorFilter((filter) => {
                 const isVisible = filter[color];
 
@@ -1757,9 +1761,12 @@
       const allItems = findVineItems();
       if (allItems.length === 0) return;
 
+      // Do not advance while fresh prices or cloud confirmations are pending.
+      if (activeFetches.size > 0 || pendingCacheConfirmations.size > 0) return;
+
       const allHidden = allItems.every(item => {
         const s = tileStates.get(item);
-        return s && s.hidden === true;
+        return s && s.hidden === true && s.wasSeenBeforeLoad === true;
       });
       if (!allHidden) return;
 
