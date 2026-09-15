@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.7 - Avoid Duplicate Startup Sync Work
+
+- **Performance**: Reuses the initial cache synchronization instead of issuing a second startup probe/sync.
+- **Performance**: Flushes a completed price-fetch batch immediately while retaining the existing debounce and throttling safeguards.
+
 ## Version 1.53.6 - Reduce Safe Startup Sync Work
 
 - **Performance**: Only the price-cache sync blocks the initial Vine grid; saved searches and keyword lists synchronize in the background.

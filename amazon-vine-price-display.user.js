@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.6
+// @version      1.53.7
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -1515,6 +1515,10 @@
   // Processing
   const activeFetches = new Map();
 
+  function flushCacheWhenFetchesIdle() {
+    if (activeFetches.size === 0 && pendingCacheUpdates.size > 0) flushCacheUpdates();
+  }
+
   function processBatch(items, isInitialLoad = false) {
     if (items.length === 0) return;
 
@@ -1719,6 +1723,7 @@
                 applyColorFilter(item, 'gray');
               }
             }
+            flushCacheWhenFetchesIdle();
           };
 
           if (isParent) {
@@ -6123,6 +6128,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       };
 
       const hasCloudSync = isSupabaseSyncConfigured() && getStoredSyncSession();
+      let initialCacheSyncPromise = null;
       if (hasCloudSync) {
         const syncInitialCache = async () => {
           const lastSync = getStorage(CONFIG.LAST_SYNC_KEY, 0) || 0;
@@ -6146,7 +6152,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         // documents can synchronize without delaying item rendering.
         Promise.all([syncSearchesWithSupabase(), syncKeywordsWithSupabase()])
           .catch(err => console.error('Vine Price Display: Background settings sync failed', err));
-        syncInitialCache().then(() => {
+        initialCacheSyncPromise = syncInitialCache().then(() => {
           setStorage(CONFIG.LAST_SYNC_KEY, Date.now());
         }).catch(err => {
           console.error('Vine Price Display: Initial cache sync failed; using local cache', err);
@@ -6167,6 +6173,11 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         // Small jitter so multiple open tabs don't all probe at the same instant.
         setTimeout(async () => {
           try {
+            if (initialCacheSyncPromise) {
+              await initialCacheSyncPromise;
+              console.log('Vine Price Display: Auto-sync skipped (initial cache sync already completed)');
+              return;
+            }
             let needsSync = !syncFreshEnough();
             if (!needsSync) {
               const remoteRevision = await fetchCacheSyncRevision();
