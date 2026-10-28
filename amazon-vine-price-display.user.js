@@ -46,6 +46,7 @@
     INFINITE_SCROLL_KEY: 'vine_infinite_scroll',
     COLOR_FILTER_KEY: 'vine_color_filter',
     OPENAI_API_KEY: 'vine_openai_api_key',
+    OPENAI_MODEL: 'vine_openai_model',
     DEEPSEEK_API_KEY: 'vine_deepseek_api_key',
     DEEPSEEK_MODEL: 'vine_deepseek_model',
     CLAUDE_API_KEY: 'vine_claude_api_key',
@@ -138,7 +139,7 @@
       openai: {
         label: 'OpenAI',
         url: 'https://api.openai.com/v1/chat/completions',
-        defaultModel: 'gpt-3.5-turbo'
+        defaultModel: 'gpt-4o-mini'
       },
       deepseek: {
         label: 'DeepSeek',
@@ -2615,7 +2616,7 @@
   // AI Review Generator
   // Per-provider storage keys — keeps generateReview free of nested provider ternaries.
   const PROVIDER_STORAGE = {
-    openai: { apiKey: CONFIG.OPENAI_API_KEY, model: null },
+    openai: { apiKey: CONFIG.OPENAI_API_KEY, model: CONFIG.OPENAI_MODEL },
     deepseek: { apiKey: CONFIG.DEEPSEEK_API_KEY, model: CONFIG.DEEPSEEK_MODEL },
     claude: { apiKey: CONFIG.CLAUDE_API_KEY, model: CONFIG.CLAUDE_MODEL }
   };
@@ -3501,6 +3502,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       timestamp: getStorage(CONFIG.AI_SETTINGS_TIMESTAMP_KEY, 0) || 0,
       provider: getStorage(CONFIG.AI_PROVIDER, 'openai'),
       openaiKey: getStorage(CONFIG.OPENAI_API_KEY, ''),
+      openaiModel: getStorage(CONFIG.OPENAI_MODEL, '') || CONFIG.PROVIDERS.openai.defaultModel,
       deepseekKey: getStorage(CONFIG.DEEPSEEK_API_KEY, ''),
       deepseekModel: getStorage(CONFIG.DEEPSEEK_MODEL, '') || CONFIG.PROVIDERS.deepseek.defaultModel,
       claudeKey: getStorage(CONFIG.CLAUDE_API_KEY, ''),
@@ -3517,6 +3519,9 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       timestamp: typeof safe.timestamp === 'number' ? safe.timestamp : 0,
       provider,
       openaiKey: typeof safe.openaiKey === 'string' ? safe.openaiKey : '',
+      openaiModel: typeof safe.openaiModel === 'string' && safe.openaiModel
+        ? safe.openaiModel
+        : CONFIG.PROVIDERS.openai.defaultModel,
       deepseekKey: typeof safe.deepseekKey === 'string' ? safe.deepseekKey : '',
       deepseekModel: typeof safe.deepseekModel === 'string' && safe.deepseekModel
         ? safe.deepseekModel
@@ -3532,6 +3537,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
     const normalized = normalizeAiKeySettings(settings);
     setStorage(CONFIG.AI_PROVIDER, normalized.provider);
     setStorage(CONFIG.OPENAI_API_KEY, normalized.openaiKey);
+    setStorage(CONFIG.OPENAI_MODEL, normalized.openaiModel);
     setStorage(CONFIG.DEEPSEEK_API_KEY, normalized.deepseekKey);
     setStorage(CONFIG.DEEPSEEK_MODEL, normalized.deepseekModel);
     setStorage(CONFIG.CLAUDE_API_KEY, normalized.claudeKey);
@@ -4518,6 +4524,8 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
             <input type="password" id="vine-openai-key"
               placeholder="sk-..."
               style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
+            <label style="display: block; margin: 8px 0 4px; color: var(--vine-fg-muted);">OpenAI Model:</label>
+            <input type="text" id="vine-openai-model" placeholder="gpt-4o-mini" style="width: 100%; padding: 8px; border: 1px solid var(--vine-border); border-radius: 6px; font-size: 14px;">
             <div style="font-size: 12px; color: var(--vine-fg-muted); margin-top: 4px;">
               Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--vine-link);">platform.openai.com</a>
             </div>
@@ -4758,6 +4766,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       const infiniteScrollCheckbox = dialog.querySelector('#vine-infinite-scroll');
       const externalLinksCheckbox = dialog.querySelector('#vine-external-links');
       const openaiKeyInput = dialog.querySelector('#vine-openai-key');
+      const openaiModelInput = dialog.querySelector('#vine-openai-model');
 
       // Auto-advance and infinite scroll are mutually exclusive
       infiniteScrollCheckbox.addEventListener('change', () => {
@@ -4791,6 +4800,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
       // Secrets are set as DOM properties, never interpolated into innerHTML —
       // a synced value containing a quote must not be able to break out of an attribute.
       openaiKeyInput.value = getStorage(CONFIG.OPENAI_API_KEY, '');
+      openaiModelInput.value = getStorage(CONFIG.OPENAI_MODEL, '') || CONFIG.PROVIDERS.openai.defaultModel;
       claudeKeyInput.value = getStorage(CONFIG.CLAUDE_API_KEY, '');
       claudeModelInput.value = getStorage(CONFIG.CLAUDE_MODEL, '') || CONFIG.PROVIDERS.claude.defaultModel;
       deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
@@ -4857,6 +4867,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       const refreshAiKeySettingInputs = () => {
         openaiKeyInput.value = getStorage(CONFIG.OPENAI_API_KEY, '');
+        openaiModelInput.value = getStorage(CONFIG.OPENAI_MODEL, '') || CONFIG.PROVIDERS.openai.defaultModel;
         deepseekKeyInput.value = getStorage(CONFIG.DEEPSEEK_API_KEY, '');
         deepseekModelInput.value = getStorage(CONFIG.DEEPSEEK_MODEL, '');
         claudeKeyInput.value = getStorage(CONFIG.CLAUDE_API_KEY, '');
@@ -4953,6 +4964,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
         if (infiniteScroll && !wasInfinite) setupInfiniteScroll();
         if (!infiniteScroll && wasInfinite) teardownInfiniteScroll();
         setStorage(CONFIG.OPENAI_API_KEY, openaiKeyInput.value.trim());
+        setStorage(CONFIG.OPENAI_MODEL, openaiModelInput.value.trim());
         setStorage(CONFIG.AI_PROVIDER, aiProviderSelect.value);
         setStorage(CONFIG.DEEPSEEK_API_KEY, deepseekKeyInput.value.trim());
         setStorage(CONFIG.DEEPSEEK_MODEL, deepseekModelInput.value.trim());
