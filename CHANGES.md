@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.8 - Configurable OpenAI Review Model
+
+- **Fix**: Replaced the deprecated default `gpt-3.5-turbo` with `gpt-4o-mini`.
+- **Feature**: Added an editable OpenAI model field in Vine Tools settings; model selection is included in encrypted AI settings sync.
+
 ## Version 1.53.7 - Avoid Duplicate Startup Sync Work
 
 - **Performance**: Reuses the initial cache synchronization instead of issuing a second startup probe/sync.
