@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.8
+// @version      1.53.9
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -3033,7 +3033,13 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
           try {
             const filled = autoFillReviewForm(title, body, stars);
             console.log('[Vine Tools] Auto-fill result:', filled);
-            if (filled.title && filled.body && filled.rating) {
+            // Amazon now writes the review title itself, so a title field that
+            // is absent or cannot be filled is not an error — only the body and
+            // star rating have to be inserted.
+            const missing = [];
+            if (!filled.body) missing.push('body');
+            if (!filled.rating) missing.push('star rating');
+            if (!missing.length) {
               if (submitAfterFill) {
                 showStatus('Review inserted — submitting...');
                 activeButton.textContent = 'Submitting...';
@@ -3050,16 +3056,13 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
                   );
                 }
               } else {
-                showStatus('Review and star rating inserted');
+                const titleNote = filled.title ? '' : ' — Amazon fills the title';
+                showStatus(`Review and star rating inserted${titleNote}`);
                 // Leave a moment for Amazon's React handlers to process the
                 // synthetic form events before hiding the generator panel.
                 setTimeout(() => setGeneratorCollapsed(true), 300);
               }
             } else {
-              const missing = [];
-              if (!filled.title) missing.push('title');
-              if (!filled.body) missing.push('body');
-              if (!filled.rating) missing.push('star rating');
               showStatus(
                 `Review generated — ${missing.join(' and ')} not found, please complete manually`,
                 true

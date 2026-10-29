@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.9 - Treat The Review Title As Optional
+
+- **Fix**: Inserting a generated review no longer reports an error when Amazon exposes no fillable title field; Amazon now writes the review title itself, so only the body and star rating block insertion and submission.
+- **Enhancement**: The success message states that Amazon supplies the title when the title field could not be filled.
+
 ## Version 1.53.8 - Configurable OpenAI Review Model
 
 - **Fix**: Replaced the deprecated default `gpt-3.5-turbo` with `gpt-4o-mini`.
