@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.10 - Wait For Amazon's AI Title Before Submitting
+
+- **Fix**: Generate and Submit waits for Amazon's AI-written review title to appear (polling for up to 10 seconds) instead of clicking Submit while the title is still empty, which triggered Amazon's validation error.
+- **Fix**: When the title never appears, the review body and rating stay inserted and the panel reports that submission must be finished manually instead of clicking into a validation error.
+
 ## Version 1.53.9 - Treat The Review Title As Optional
 
 - **Fix**: Inserting a generated review no longer reports an error when Amazon exposes no fillable title field; Amazon now writes the review title itself, so only the body and star rating block insertion and submission.

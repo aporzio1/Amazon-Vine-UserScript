@@ -72,8 +72,9 @@ This is a userscript version of the Amazon Vine Price Display extension. It work
    Amazon's review page, **Generate Review** fills the body and selected star
    rating, plus the title when Amazon still exposes a title field (Amazon now
    generates titles itself), then collapses the panel; **Generate and Submit**
-   performs the same checks, clicks Amazon's Submit button once the body and
-   star rating succeed, and collapses the panel after initiating submission
+   performs the same checks, waits up to 10 seconds for Amazon's generated
+   title to appear, clicks Amazon's Submit button once the body, star rating,
+   and title are in place, and collapses the panel after initiating submission
 3. **Access Settings**: Click the "Vine Tools" link in the header navigation on any Amazon Vine page
 4. **Saved Searches**: Use the "Saved Searches" tab to add, rename (click ✏️),
    delete (click 🗑️ twice), and reorder (drag the ⋮⋮ handle) favorite terms.

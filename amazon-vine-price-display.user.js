@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.9
+// @version      1.53.10
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2331,6 +2331,43 @@
     return findFirstMatch(document, REVIEW_TITLE_SELECTORS);
   }
 
+  // Amazon now writes the review title with AI a few seconds after the body
+  // lands, so the title field can be missing or empty right after auto-fill.
+  // Clicking Submit at that moment fails Amazon's validation, so wait for it.
+  const REVIEW_TITLE_WAIT_MS = 10000;
+  const REVIEW_TITLE_POLL_MS = 250;
+
+  function readReviewTitleValue() {
+    const candidates = [findReviewTitleField()];
+    const root = findReviewFormScope() || document;
+    for (const field of root.querySelectorAll('input, textarea, [contenteditable="true"]')) {
+      if (field.closest('#vine-review-generator')) continue;
+      const hints = [
+        field.id,
+        field.name,
+        field.getAttribute('aria-label'),
+        field.getAttribute('placeholder')
+      ].filter(Boolean).join(' ');
+      // Title fields Amazon fills on its own may not match REVIEW_TITLE_SELECTORS.
+      if (/title/i.test(hints)) candidates.push(field);
+    }
+    for (const field of candidates) {
+      if (!field) continue;
+      const value = field.isContentEditable ? field.textContent : field.value;
+      if (value && value.trim()) return value.trim();
+    }
+    return '';
+  }
+
+  async function waitForReviewTitle(timeoutMs = REVIEW_TITLE_WAIT_MS) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (readReviewTitleValue()) return true;
+      await new Promise(resolve => setTimeout(resolve, REVIEW_TITLE_POLL_MS));
+    }
+    return !!readReviewTitleValue();
+  }
+
   function describeEl(el) {
     if (!el) return 'null';
     const id = el.id ? `#${el.id}` : '';
@@ -3046,6 +3083,21 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
                 // Allow Amazon's React state and validation to process the
                 // field and rating events before clicking its Submit control.
                 await new Promise(resolve => setTimeout(resolve, 750));
+                // Amazon's AI-written title appears a few seconds after the
+                // body, so clicking Submit before then trips validation.
+                let titleReady = !!readReviewTitleValue();
+                if (!titleReady) {
+                  showStatus('Waiting for Amazon’s AI title…');
+                  titleReady = await waitForReviewTitle();
+                }
+                if (!titleReady) {
+                  showStatus(
+                    'Review inserted, but Amazon’s title has not appeared yet. Please submit once it does.',
+                    true
+                  );
+                  return;
+                }
+                showStatus('Review inserted — submitting...');
                 if (submitReviewForm()) {
                   showStatus('Review submitted');
                   setGeneratorCollapsed(true);
