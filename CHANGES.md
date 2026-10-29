@@ -1,5 +1,10 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.11 - Generate From Comments When The Listing Is Gone
+
+- **Fix**: Removed or otherwise unavailable product listings no longer abort AI review generation; the description fetch falls back to the optional comments instead of reporting a fetch error.
+- **Fix**: Without comments, an unavailable listing asks for comments to generate from rather than showing a raw fetch failure.
+
 ## Version 1.53.10 - Wait For Amazon's AI Title Before Submitting
 
 - **Fix**: Generate and Submit waits for Amazon's AI-written review title to appear (polling for up to 10 seconds) instead of clicking Submit while the title is still empty, which triggered Amazon's validation error.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.10
+// @version      1.53.11
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -2714,9 +2714,13 @@ You MUST return a JSON object with exactly two string fields:
 - "body": the review body, 5-8 sentences. Jump straight into it with no greetings. Do NOT mention the star rating number.
 Return ONLY the JSON object — no prose before or after.`;
 
+    const productSection = productDescription
+      ? `Product: ${productDescription}`
+      : 'The product listing is no longer available, so rely only on the notes below and do not invent features.';
+
     const userPrompt = `Write a review for this product based on its features and typical use.
 
-Product: ${productDescription}
+${productSection}
 
 ${userComments ? `Notes from testing: ${userComments}` : 'Base the review on the product description and realistic use cases for this type of product.'}
 
@@ -3018,6 +3022,7 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
 
       try {
         let description = '';
+        let productUnavailable = false;
 
         if (window.location.href.includes('/review/create-review')) {
           // On review page, extract ASIN from URL and fetch product page
@@ -3038,23 +3043,38 @@ Respond with a JSON object: {"title": "...", "body": "..."}`;
             const response = await gmFetch({ method: 'GET', url: productUrl });
             const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
             const descElement = findFirstMatch(doc, CONFIG.PRODUCT_DESC_SELECTORS);
-            if (!descElement) {
-              showStatus('Could not extract product description from product page', true);
-              return;
+            if (descElement) {
+              description = descElement.textContent.trim().substring(0, 1000);
+            } else {
+              productUnavailable = true;
             }
-            description = descElement.textContent.trim().substring(0, 1000);
           } catch (fetchError) {
-            showStatus('Failed to fetch product details: ' + fetchError.message, true);
-            return;
+            // Removed listings usually fail here (404 or a "page not found" dog page).
+            console.warn('[Vine Tools] Product details fetch failed:', fetchError);
+            productUnavailable = true;
           }
         } else {
           // Live product-detail page — omit #productTitle so we prefer body copy when available.
           const descriptionElement = findFirstMatch(document, CONFIG.PRODUCT_DESC_SELECTORS.slice(0, 3));
-          if (!descriptionElement) {
-            showStatus('Could not find product description on this page', true);
+          if (descriptionElement) {
+            description = descriptionElement.textContent.trim().substring(0, 1000);
+          } else {
+            productUnavailable = true;
+          }
+        }
+
+        // A removed listing has no description to work from, so fall back to
+        // the reviewer's own comments instead of failing generation.
+        if (productUnavailable) {
+          if (!comments) {
+            showStatus(
+              'Product details unavailable (the listing may have been removed) — add comments to generate a review',
+              true
+            );
             return;
           }
-          description = descriptionElement.textContent.trim().substring(0, 1000);
+          console.log('[Vine Tools] Product details unavailable; generating from comments');
+          showStatus('Product details unavailable — generating from your comments…');
         }
 
         const review = await generateReview(description, stars, comments, ({ attempt, maxAttempts, delayMs, reason }) => {
