@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Vine Price Display
 // @namespace    http://tampermonkey.net/
-// @version      1.53.11
+// @version      1.53.12
 // @description  Displays product prices on Amazon Vine items with color-coded indicators and caching
 // @author       Andrew Porzio
 // @updateURL    https://raw.githubusercontent.com/aporzio1/Amazon-Vine-UserScript/main/amazon-vine-price-display.user.js
@@ -675,6 +675,20 @@
     pendingCacheUpdates.clear();
     setCache(base);
     if (scheduleSync) queueCacheSync();
+  }
+
+  function markItemSeen(asin) {
+    const timestamp = Date.now();
+    getCache((cache) => {
+      const current = cache[asin] || {};
+      pendingCacheUpdates.set(asin, { ...current, isSeen: true, timestamp });
+      cacheWriteGeneration++;
+      pendingSeenUpdates.delete(asin);
+      const now = Date.now();
+      if (!firstPendingAt) firstPendingAt = now;
+      if (cacheUpdateTimeout) clearTimeout(cacheUpdateTimeout);
+      cacheUpdateTimeout = setTimeout(flushCacheUpdates, CONFIG.CACHE_FLUSH_DEBOUNCE);
+    });
   }
 
   function setCachedPrice(asin, price, isSeen = true, extra = null) {
@@ -1625,7 +1639,7 @@
             // parent, or expired no-price result.
             const priorIsSeen = Boolean(
               cached
-              && (cached.noPrice || ((staleApproxEntry || staleParentEntry) && cached.isSeen))
+              && (cached.isSeen === true || cached.noPrice || ((staleApproxEntry || staleParentEntry) && cached.isSeen))
             );
             if (priorIsSeen) {
               const s = tileState(item);
@@ -1648,6 +1662,7 @@
         });
 
         uncachedItems.forEach(({ item, asin, url, isParent, priorIsSeen }) => {
+          if (!priorIsSeen) markItemSeen(asin);
           const fetchId = `${asin}-${Date.now()}`;
           activeFetches.set(asin, fetchId);
 

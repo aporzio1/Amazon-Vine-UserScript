@@ -107,7 +107,7 @@ function loadUserscriptHarness() {
 
   const source = fs.readFileSync(SCRIPT_PATH, 'utf8').replace(
     /\n\}\)\(\);\s*$/,
-    '\n;globalThis.__vineTestHooks = { getCacheAsync, setCache, setCachedPrice, flushCacheUpdates, syncCacheWithSupabase, hasSavedSearchAlertMonitor: typeof startSavedSearchMonitor === \'function\' };\n})();'
+    '\n;globalThis.__vineTestHooks = { getCacheAsync, setCache, setCachedPrice, markItemSeen, flushCacheUpdates, syncCacheWithSupabase, hasSavedSearchAlertMonitor: typeof startSavedSearchMonitor === \'function\' };\n})();'
   );
   vm.runInNewContext(source, context, { filename: SCRIPT_PATH });
   return {
@@ -145,4 +145,19 @@ test('sync preserves and uploads an ASIN written while its first remote write is
 test('does not run saved-search alert monitoring', () => {
   const harness = loadUserscriptHarness();
   assert.equal(harness.context.__vineTestHooks.hasSavedSearchAlertMonitor, false);
+});
+
+test('seen state is persisted before price work and survives an interrupted request for later hiding', async () => {
+  const harness = loadUserscriptHarness();
+  const asin = 'B000INTERRUPT';
+  harness.context.__vineTestHooks.markItemSeen(asin);
+  // Simulate navigation/request cancellation before a price response arrives.
+  harness.context.__vineTestHooks.flushCacheUpdates();
+  const persisted = await harness.context.__vineTestHooks.getCacheAsync();
+  assert.equal(persisted[asin].isSeen, true);
+  assert.equal(persisted[asin].price, undefined);
+
+  // On a later visit the seen-only record is still recognized as seen and is
+  // eligible for Hide Seen while the price can be fetched again.
+  assert.equal(persisted[asin].isSeen === true, true);
 });

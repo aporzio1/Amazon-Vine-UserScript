@@ -1,5 +1,9 @@
 # Amazon Vine Price Display - Change Log
 
+## Version 1.53.12 - Persist Seen State Before Price Fetch
+
+- **Fix**: Vine items are marked seen and persisted before starting price lookups, so navigation or a failed request cannot make them reappear as unseen.
+
 ## Version 1.53.11 - Generate From Comments When The Listing Is Gone
 
 - **Fix**: Removed or otherwise unavailable product listings no longer abort AI review generation; the description fetch falls back to the optional comments instead of reporting a fetch error.
