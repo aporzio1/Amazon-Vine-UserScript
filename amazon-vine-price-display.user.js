@@ -690,7 +690,10 @@
       });
       cacheWriteGeneration++;
       if (gateSeenUntilCloudAck) {
-        pendingSeenUpdates.set(asin, { timestamp, generation: cacheWriteGeneration });
+        pendingSeenUpdates.set(asin, {
+          timestamp: typeof current.timestamp === 'number' ? current.timestamp : timestamp,
+          generation: cacheWriteGeneration
+        });
       } else {
         pendingSeenUpdates.delete(asin);
       }
