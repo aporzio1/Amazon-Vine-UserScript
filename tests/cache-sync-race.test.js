@@ -112,6 +112,7 @@ function loadUserscriptHarness() {
   vm.runInNewContext(source, context, { filename: SCRIPT_PATH });
   return {
     context,
+    storage,
     firstGetStarted,
     firstReplaceStarted,
     secondReplaceFinished,
@@ -149,6 +150,7 @@ test('does not run saved-search alert monitoring', () => {
 
 test('seen state is persisted before price work and survives an interrupted request for later hiding', async () => {
   const harness = loadUserscriptHarness();
+  harness.storage.delete('vine_sync_session');
   const asin = 'B000INTERRUPT';
   harness.context.__vineTestHooks.markItemSeen(asin);
   // Simulate navigation/request cancellation before a price response arrives.

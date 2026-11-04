@@ -678,12 +678,22 @@
   }
 
   function markItemSeen(asin) {
+    const gateSeenUntilCloudAck = isSupabaseSyncConfigured()
+      && Boolean(getStoredSyncSession());
     const timestamp = Date.now();
     getCache((cache) => {
       const current = cache[asin] || {};
-      pendingCacheUpdates.set(asin, { ...current, isSeen: true, timestamp });
+      pendingCacheUpdates.set(asin, {
+        ...current,
+        isSeen: gateSeenUntilCloudAck ? false : true,
+        timestamp: typeof current.timestamp === 'number' ? current.timestamp : timestamp
+      });
       cacheWriteGeneration++;
-      pendingSeenUpdates.delete(asin);
+      if (gateSeenUntilCloudAck) {
+        pendingSeenUpdates.set(asin, { timestamp, generation: cacheWriteGeneration });
+      } else {
+        pendingSeenUpdates.delete(asin);
+      }
       const now = Date.now();
       if (!firstPendingAt) firstPendingAt = now;
       if (cacheUpdateTimeout) clearTimeout(cacheUpdateTimeout);
