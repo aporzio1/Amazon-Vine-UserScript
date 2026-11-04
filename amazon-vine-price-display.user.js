@@ -683,15 +683,19 @@
     const timestamp = Date.now();
     getCache((cache) => {
       const current = cache[asin] || {};
+      const currentTimestamp = typeof current.timestamp === 'number'
+        && timestamp - current.timestamp <= cacheTTL(current)
+        ? current.timestamp
+        : timestamp;
       pendingCacheUpdates.set(asin, {
         ...current,
         isSeen: gateSeenUntilCloudAck ? false : true,
-        timestamp: typeof current.timestamp === 'number' ? current.timestamp : timestamp
+        timestamp: currentTimestamp
       });
       cacheWriteGeneration++;
       if (gateSeenUntilCloudAck) {
         pendingSeenUpdates.set(asin, {
-          timestamp: typeof current.timestamp === 'number' ? current.timestamp : timestamp,
+          timestamp: currentTimestamp,
           generation: cacheWriteGeneration
         });
       } else {
