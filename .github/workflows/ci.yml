@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check JavaScript syntax
+        run: |
+          node --check amazon-vine-price-display.user.js
+          node --check sync-callback/callback-v1.50.0.js
+      - name: Run tests
+        run: node --test tests/*.test.js
